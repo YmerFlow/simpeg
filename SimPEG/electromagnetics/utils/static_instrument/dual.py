@@ -76,11 +76,16 @@ class DualMomentTEMXYZSystem(base.XYZSystem):
     
     @property
     def sounding_filter(self):
-        # Exclude soundings with no usable gates
-        ch1 = np.isfinite(self._xyz.dbdt_ch1gt.values) & np.isfinite(self._xyz.dbdt_std_ch1gt.values) & self._xyz.dbdt_inuse_ch1gt
-        ch2 = np.isfinite(self._xyz.dbdt_ch2gt.values) & np.isfinite(self._xyz.dbdt_std_ch2gt.values) & self._xyz.dbdt_inuse_ch2gt
-        return ch1.sum(axis=1) + ch2.sum(axis=1) > 0
-
+        if "dbdt_ch1gt" in self._xyz.layer_data and "dbdt_ch2gt" in self._xyz.layer_data:
+            # Exclude soundings with no usable gates
+            ch1 = np.isfinite(self._xyz.dbdt_ch1gt.values) & np.isfinite(self._xyz.dbdt_std_ch1gt.values) & self._xyz.dbdt_inuse_ch1gt
+            ch2 = np.isfinite(self._xyz.dbdt_ch2gt.values) & np.isfinite(self._xyz.dbdt_std_ch2gt.values) & self._xyz.dbdt_inuse_ch2gt
+            return ch1.sum(axis=1) + ch2.sum(axis=1) > 0
+        elif "resistivity" in self._xyz.layer_data:
+            return np.isfinite(self._xyz.resistivity.values).sum(axis=1) > 0
+        else:
+            return np.ones(len(self._xyz.flightlines))
+        
     @property
     def area(self):
         return self.gex.General['TxLoopArea']
