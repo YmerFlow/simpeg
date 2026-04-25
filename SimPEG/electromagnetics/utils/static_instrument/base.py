@@ -499,8 +499,10 @@ class XYZSystem(object):
             for col in xyz.layer_data.keys():
                 if col.endswith("_ch%sgt" % idx):
                     new_xyz.layer_data[col] = pd.DataFrame(
-                        index = new_xyz.flightlines.index,
-                        columns=np.arange(len(moment_new_times)))
+                        np.nan,
+                        index=new_xyz.flightlines.index,
+                        columns=np.arange(len(moment_new_times)),
+                        dtype=float)
                     new_xyz.layer_data[col].loc[:,pos] = xyz.layer_data[col]
 
         return new_xyz
