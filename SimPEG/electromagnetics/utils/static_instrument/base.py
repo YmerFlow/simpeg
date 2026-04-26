@@ -541,7 +541,7 @@ class XYZSystem(object):
             with np.errstate(divide='ignore'):
                 xyzresp.flightlines['resdata'] = np.sqrt(np.nansum(derrall**2, axis=1) / (~np.isnan(derrall)).sum(axis=1))
             
-        dpred = dpred / self.xyz.model_info.get("scalefactor", 1)
+        dpred = -dpred / self.xyz.model_info.get("scalefactor", 1)
         
         for idx, moment in enumerate(reshape(dpred)):
             xyzresp.layer_data["dbdt_ch%sgt" % (idx + 1)] = moment
