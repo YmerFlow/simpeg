@@ -215,6 +215,9 @@ class XYZSystem(object):
     "Ratio of one layer to the next if using geometric discretization"
 
     def make_thicknesses(self):
+        # If we already have thicknesses because input is a model, don't deviate from that
+        if "dep_top" in self.xyz.layer_params:
+            return np.diff(self.xyz.layer_params["dep_top"].values)
         if self.startmodel__thicknesses_type == "logspaced":
             thk = build_log_spaced_layer_thick(first_thk=self.startmodel__thicknesses_minimum_dz,
                                                last_dep_top=self.startmodel__top_depth_last_layer,
@@ -226,8 +229,6 @@ class XYZSystem(object):
                                                                                         self.startmodel__thicknesses_minimum_dz,
                                                                                         self.startmodel__thicknesses_geomtric_factor)
         elif self.startmodel__thicknesses_type == "time":
-            if "dep_top" in self.xyz.layer_params:
-                return np.diff(self.xyz.layer_params["dep_top"].values)
             # FIX ME: if model is given it should use the resistivities in the model, not self.startmodel__res
             return SimPEG.electromagnetics.utils.em1d_utils.get_vertical_discretization_time(
                 np.sort(np.concatenate(self.times)),
@@ -498,8 +499,10 @@ class XYZSystem(object):
             for col in xyz.layer_data.keys():
                 if col.endswith("_ch%sgt" % idx):
                     new_xyz.layer_data[col] = pd.DataFrame(
-                        index = new_xyz.flightlines.index,
-                        columns=np.arange(len(moment_new_times)))
+                        np.nan,
+                        index=new_xyz.flightlines.index,
+                        columns=np.arange(len(moment_new_times)),
+                        dtype=float)
                     new_xyz.layer_data[col].loc[:,pos] = xyz.layer_data[col]
 
         return new_xyz
