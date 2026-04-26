@@ -50,18 +50,18 @@ class DualMomentTEMXYZSystem(base.XYZSystem):
     See the help for `XYZSystem` for more information on basic usage.
     """
     gate_filter__start_lm=5
-    "Lowest used gate (zero based)"
-    gate_filter__end_lm=11
-    "First unused gate above used ones (zero based)"
-    gate_filter__start_hm=12
-    "Lowest used gate (zero based)"
-    gate_filter__end_hm=26
-    "First unused gate above used ones (zero based)"
+    "First LM (low moment) gate to include in the inversion, zero-based index. Early gates contaminated by transmitter on-time ringing or very early induction effects should be excluded. Check the GEX 'RemoveInitialGates' field for the system manufacturer's recommended cutoff."
+    gate_filter__end_lm=28
+    "Last LM gate to include (exclusive, zero-based). Gates beyond this index are excluded — typically those where signal has decayed below the noise floor. Check late-time gate amplitudes in your data to identify the noise-dominated cutoff."
+    gate_filter__start_hm=10
+    "First HM (high moment) gate to include in the inversion, zero-based index. Same considerations as start_lm. The HM channel typically has later reliable gates than LM due to its higher transmitter moment."
+    gate_filter__end_hm=32
+    "Last HM gate to include (exclusive, zero-based). Same considerations as end_lm for the high-moment channel."
 
     rx_orientation : typing.Literal['x', 'y', 'z'] = 'z'
-    "Receiver orientation"
+    "Receiver coil orientation axis. 'z' is vertical (standard for AEM dB/dt measurements). Change only if the system uses a horizontal or tilted receiver coil."
     tx_orientation : typing.Literal['x', 'y', 'z'] = 'z'
-    "Transmitter orientation"
+    "Transmitter loop orientation axis. 'z' is vertical (standard for horizontal AEM loops). Change only for non-standard transmitter configurations."
     
     @classmethod
     def load_gex(cls, gex):
