@@ -150,7 +150,7 @@ class XYZSystem(object):
                 in zip(self.times_full, self.times_filter)]
     
     startmodel__n_layer = 30
-    "Number of layers in model discretization"
+    "Number of 1D model layers per sounding. More layers give finer depth resolution but increase computation time. Typical range: 20–35. Depth extent is controlled by 'top_depth_last_layer'."
     @property
     def n_layer_used(self):
         if "resistivity" in self.xyz.layer_data:
@@ -178,13 +178,13 @@ class XYZSystem(object):
     dipole_moments = [1]
     
     uncertainties__std_data = 0.03
-    "Noise as a factor of data"
+    "Minimum relative noise floor as a fraction of data amplitude (e.g. 0.03 = 3%). When measured stacking noise is lower than this value, this floor is used instead. Prevents overfitting in low-noise windows. Typical range: 0.02–0.10."
     uncertainties__std_data_override = False
-    "If set to true, use the std_data value instead of data std:s from stacking"
+    "If true, ignore per-sounding noise from stacking and apply 'std_data' uniformly to all soundings. Use when data lacks measured STD (e.g. forward model output), or to impose a uniform noise floor across the survey."
     uncertainties__noise_level_1ms = 1e-9
-    "Amplitude at 1ms, in V/m^2"
+    "Absolute noise floor amplitude at 1 ms gate time (V/Am²). Sets a practical lower bound on uncertainty for early-time gates. Scales with gate time as noise_level_1ms × (t × 1000)^noise_exponent. Typical range: 1e-13 (quiet system) to 1e-9 (noisy). Check system specs or late-time noise in your data."
     uncertainties__noise_exponent = -0.5
-    "Slope of noise floor, t^uncertainties__noise_exponent"
+    "Power-law time exponent for the noise floor decay. Default -0.5 means noise scales as t^(-0.5), a common approximation for AEM systems. Combined with 'noise_level_1ms' to form the time-varying noise floor: N(t) = noise_level_1ms × (t × 1000)^noise_exponent."
     @property
     def uncert_array(self):
         n_sounding = len(self.xyz.flightlines)
@@ -206,13 +206,13 @@ class XYZSystem(object):
         return np.where(np.isnan(self.data_array_nan), np.Inf, uncertainties)
 
     startmodel__thicknesses_type: typing.Literal['logspaced', 'geometric', 'time'] = "logspaced"
-    "Type of model discretization"
+    "Layer thickness scheme. 'logspaced': layers increase in thickness logarithmically from top to bottom — recommended for most AEM surveys. 'geometric': each layer is a fixed ratio thicker than the one above (set ratio with 'thicknesses_geometric_factor'). 'time': layer boundaries are scaled to gate times (good for data-adaptive depth discretization)."
     startmodel__thicknesses_minimum_dz = 1
-    "Thickness of thinnest layer if using 'logspaced' or 'geometric' discretization"
+    "Thickness of the shallowest layer (m). Controls near-surface resolution. Used by 'logspaced' and 'geometric' thickness schemes. Typical: 1–5 m for shallow targets, 5–10 m for deep regional surveys."
     startmodel__top_depth_last_layer = 400
-    "Depth to the top of the last layer if using logspaced discretization"
+    "Depth to the top of the deepest layer (m), used by the 'logspaced' scheme. Should match the approximate depth of investigation (DOI) for the survey. Typical AEM DOI: 100–500 m depending on system moment and ground conductivity. Setting this too deep wastes model parameters on unresolved depths."
     startmodel__thicknesses_geomtric_factor = 1.15309
-    "Ratio of one layer to the next if using geometric discretization"
+    "Layer thickness ratio for the 'geometric' scheme — each layer is this factor thicker than the one above. Default 1.153 gives approximately log-spaced layers. Increase for faster depth growth; decrease for more uniform thickness."
 
     def make_thicknesses(self):
         # If we already have thicknesses because input is a model, don't deviate from that
@@ -258,11 +258,11 @@ class XYZSystem(object):
         return (len(thicknesses)+1)*len(self.xyz.flightlines)
     
     simulation__solver : typing.Literal['LU', 'pardiso'] = 'LU'
-    "Equation solver to use. Some solvers might require hardware support."
+    "Linear solver backend for the forward simulation. 'LU' uses scipy sparse LU decomposition (default, no extra dependencies). 'pardiso' uses Intel MKL Pardiso via pymatsolver — significantly faster for large problems but requires compatible hardware and the pymatsolver package."
     simulation__parallel = True
-    "Use multiple computation threads in parallel. Useful to set to false in a notebook for debugging."
+    "Run forward simulations for each sounding in parallel. Strongly recommended for production runs. Set to False only for single-threaded debugging in a notebook."
     simulation__n_cpu = 3
-    "Number of threads (roughly same as CPU cores) to use"
+    "Number of CPU threads for parallel simulation. Set to the number of available cores on the machine (minus 1–2 for OS headroom). Increasing beyond the number of physical cores gives diminishing returns."
     def make_simulation(self, survey, thicknesses):
         if 'pardiso' in self.simulation__solver.lower():
             print('Using Pardiso solver')
@@ -304,7 +304,7 @@ class XYZSystem(object):
         return dmis
     
     startmodel__res=100.
-    "Initial resistivity (ohmm)"
+    "Uniform starting resistivity (Ω·m). All soundings begin from a homogeneous halfspace at this value. Should be a reasonable estimate of the background resistivity — a poor choice increases iteration count. Typical values: 10 Ω·m (conductive settings, e.g. saline groundwater), 100 Ω·m (moderate), 1000 Ω·m (resistive, e.g. crystalline rock or dry alluvium)."
     def make_startmodel(self, thicknesses):
         startmodel=np.log(np.ones(self.n_param(thicknesses)) * 1/self.startmodel__res)
         return startmodel
@@ -323,8 +323,11 @@ class XYZSystem(object):
     #    6) geomean of the linespacing and sounding spacing: sqrt(line_space * sound_space)
     #        - 25m sounding spacing, 100m line spacing: h=50, alpha_s=4e-4
     regularization__alpha_s = 1e-4
+    "Smallness weight — penalizes deviation of each layer from the reference (starting) model. Larger values anchor the model more strongly to 'startmodel__res'. A rule of thumb: alpha_s ≈ 1 / (sounding_spacing × line_spacing) in m⁻². For 25 m sounding spacing and 100 m line spacing: alpha_s ≈ 4e-4. Too large: model is too smooth and resistivity extremes are suppressed. Too small: unconstrained model, may fit noise."
     regularization__alpha_r = 1.
+    "Lateral (along-line) smoothness weight — penalizes resistivity differences between neighboring soundings. The ratio alpha_r / alpha_z controls lateral vs. vertical smoothing. Default 1:1 is isotropic. Increase alpha_r relative to alpha_z to enforce more lateral continuity (useful for layered geology)."
     regularization__alpha_z = 1.
+    "Vertical smoothness weight — penalizes resistivity differences between adjacent layers in a sounding. The ratio alpha_z / alpha_r controls vertical vs. lateral smoothing. Increase alpha_z relative to alpha_r to enforce more layered structure (i.e., smoother depth profiles)."
 
     def make_regularization(self, thicknesses):
         if False:
@@ -365,21 +368,25 @@ class XYZSystem(object):
             return reg
 
     directives__beta__seed : int = None
-    "Random seed for beta (regularization) schedule estimator"
+    "Random seed for the beta estimator. Set to a fixed integer for reproducible results across runs. Leave blank (None) for random initialization."
     directives__beta__beta0_ratio : float = 10.
-    "Start ratio for the beta (regularization) schedule estimator"
+    "Initial regularization strength as a multiple of the estimated optimal beta. Higher values (10–100) start with a heavily smoothed model and relax regularization gradually — this is the standard Tikhonov approach and typically converges in 20–30 iterations. Values near 1 give the data too much control immediately, leading to slow or erratic convergence. Recommended: 10–50."
     directives__beta__cooling_factor=2
-    "Cooling factor for the beta (regularization) schedule"
+    "Factor by which the regularization weight (beta) is divided at each cooling step. Default 2 halves beta each step. Larger values (4–10) cool faster and may converge in fewer iterations but risk overshooting the data misfit target."
     directives__beta__cooling_rate=1
-    "Initial cooling rate for the beta (regularization) schedule"
+    "Number of Gauss-Newton outer iterations between each beta cooling step. Default 1 cools every iteration. Increase to 2–3 if the inversion is oscillating or if you want more iterations at each regularization level before reducing it."
     directives__irls__enable = False
-    "IRLS is used to generate a sparse model in addition to and l2 model"
+    "Enable sparse (IRLS) inversion after the smooth L2 model converges. IRLS produces a model with sharper layer boundaries by iteratively reweighting the regularization. The smooth L2 model is always produced first and saved regardless."
     directives__irls__max_iterations = 30
-    "Maximum number of iterations (after l2 model has converged)"
+    "Maximum IRLS iterations after L2 convergence. Each IRLS iteration updates the reweighting and re-inverts. Typical: 10–30."
     directives__irls__minGNiter = 1
+    "Minimum Gauss-Newton iterations per IRLS step before the reweighting is updated. Default 1. Increase to 2–3 for more stable IRLS convergence."
     directives__irls__fix_Jmatrix = True
+    "Fix the sensitivity matrix (Jacobian) during IRLS iterations. True is faster (avoids recomputing sensitivities) and recommended for most cases. Set False only if the model changes substantially between IRLS iterations."
     directives__irls__f_min_change = 1e-3
+    "IRLS convergence tolerance — minimum fractional change in the objective function between iterations. Smaller values require tighter convergence before stopping."
     directives__irls__coolingRate = 1
+    "Number of IRLS iterations between each update of the IRLS reweighting factors. Default 1 updates every iteration."
     def make_directives(self):
         if self.directives__beta__seed:
             BetaEstimate = directives.BetaEstimate_ByEig(beta0_ratio=self.directives__beta__beta0_ratio, 
@@ -406,9 +413,10 @@ class XYZSystem(object):
 
         return dirs
         
-    optimizer__max_iter=40
-    "Maximum number of gauss newton iterations"
+    optimizer__max_iter=50
+    "Maximum number of Gauss-Newton outer iterations. The inversion will stop early if the TargetMisfit directive is satisfied (data fit is good enough). With beta0_ratio=10 and cooling_rate=1, convergence in 20–35 iterations is typical. Increase to 60–80 only if the inversion is still improving at the limit."
     optimizer__max_iter_cg=20
+    "Maximum conjugate gradient (CG) iterations for the inner linear solve at each Gauss-Newton step. Increase if you see poor model updates per outer iteration, which can indicate a poorly conditioned problem. Default 20 is sufficient for most AEM problems."
     def make_optimizer(self):
         return optimization.InexactGaussNewton(maxIter = self.optimizer__max_iter, maxIterCG=self.optimizer__max_iter_cg)
     
@@ -544,7 +552,7 @@ class XYZSystem(object):
             with np.errstate(divide='ignore'):
                 xyzresp.flightlines['resdata'] = np.sqrt(np.nansum(derrall**2, axis=1) / (~np.isnan(derrall)).sum(axis=1))
             
-        dpred = dpred / self.xyz.model_info.get("scalefactor", 1)
+        dpred = -dpred / self.xyz.model_info.get("scalefactor", 1)
         
         for idx, moment in enumerate(reshape(dpred)):
             xyzresp.layer_data["dbdt_ch%sgt" % (idx + 1)] = moment
