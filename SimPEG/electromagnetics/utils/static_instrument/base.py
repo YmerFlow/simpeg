@@ -38,13 +38,142 @@ try:
     print("pymatsolver.PardisoSolver available for fwd modelling")
 except:
     print("Could not import PardisoSolver, only default (spLU) available")
-    
+
+try:
+    from kneed import KneeLocator
+except ImportError:
+    KneeLocator = None
+
 import scipy.stats
 import copy
 import re
 import typing
 
 from . import xyzfilter
+
+
+class XYZClusterer:
+    """Cluster AEM soundings by data similarity to build a clustered start model.
+
+    Takes a filtered XYZ object (``system.xyz``) and produces per-cluster
+    representative soundings that can be inverted cheaply before the full
+    inversion starts.  K is selected automatically via the Kneedle algorithm
+    (requires the *kneed* package).
+
+    Parameters
+    ----------
+    xyz : FilteredXYZ
+        The (filtered) sounding data — pass ``system.xyz``.
+    k_range : iterable of int
+        K values to scan when choosing the number of clusters.
+    random_seed : int or None
+        Random seed for K-means reproducibility.
+    valid_gate_threshold : float
+        Gates present in fewer than this fraction of soundings are excluded
+        from the feature vector.
+    """
+
+    def __init__(self, xyz, k_range=range(2, 20),
+                 random_seed=None, valid_gate_threshold=0.5):
+        self.xyz = xyz
+        self.k_range = k_range
+        self.random_seed = random_seed
+        self.valid_gate_threshold = valid_gate_threshold
+        self.cluster_ids_ = None
+        self.n_clusters_ = None
+
+    def build_feature_matrix(self):
+        """Return z-scored ``(n_soundings, n_features)`` matrix for K-means.
+
+        Features: ``log|data|`` for gates present in ≥ threshold of soundings,
+        plus flight altitude.  NaN entries are zero-filled after scaling.
+        """
+        data_arrays = [
+            df.values.astype(float)
+            for col, df in sorted(self.xyz.layer_data.items())
+            if re.match(r'^dbdt_ch\d+gt$', col)
+        ]
+        if not data_arrays:
+            raise ValueError("No dbdt_ch*gt columns found; cannot build feature matrix")
+        data_2d = np.hstack(data_arrays)
+
+        valid_gates = np.mean(~np.isnan(data_2d), axis=0) >= self.valid_gate_threshold
+        data_2d = data_2d[:, valid_gates]
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            log_data = np.where(data_2d != 0, np.log(np.abs(data_2d)), np.nan)
+
+        altitude = self.xyz.flightlines[self.xyz.alt_column].values.astype(float).reshape(-1, 1)
+        features = np.hstack([log_data, altitude])
+
+        mean = np.nanmean(features, axis=0)
+        std = np.nanstd(features, axis=0)
+        std[std == 0] = 1.0
+        return np.where(np.isnan((features - mean) / std), 0.0, (features - mean) / std)
+
+    def _select_k(self, features):
+        """Run K-means over k_range, apply Kneedle, return optimal K."""
+        from sklearn.cluster import KMeans
+        if KneeLocator is None:
+            raise ImportError("kneed package required for cluster count auto-detection: pip install kneed")
+        k_list = list(self.k_range)
+        inertias = [
+            KMeans(n_clusters=k, random_state=self.random_seed, n_init=10).fit(features).inertia_
+            for k in k_list
+        ]
+        return KneeLocator(k_list, inertias, curve='convex', direction='decreasing').knee
+
+    def fit(self):
+        """Detect K via Kneedle, run K-means, store results; return cluster_ids."""
+        from sklearn.cluster import KMeans
+        features = self.build_feature_matrix()
+        k = self._select_k(features)
+        print(f"Clustering: kneedle selected K={k}")
+        km = KMeans(n_clusters=k, random_state=self.random_seed, n_init=10)
+        km.fit(features)
+        self.cluster_ids_ = km.labels_
+        self.n_clusters_ = k
+        self.medoid_indices_ = self.find_medoids(features)
+        return self.cluster_ids_
+
+    def find_medoids(self, features):
+        """Return the index (into self.xyz / features rows) of the medoid per cluster.
+
+        The medoid is the actual sounding that minimises mean distance to all
+        other cluster members in feature space.  Returns an int array of length
+        n_clusters_ where entry k is the sounding index for cluster k.
+        """
+        medoids = np.zeros(self.n_clusters_, dtype=int)
+        for k in range(self.n_clusters_):
+            mask = self.cluster_ids_ == k
+            cluster_features = features[mask]
+            global_indices = np.where(mask)[0]
+            diffs = cluster_features[:, np.newaxis, :] - cluster_features[np.newaxis, :, :]
+            dists = np.sqrt((diffs ** 2).sum(axis=2))
+            local_idx = dists.mean(axis=1).argmin()
+            medoids[k] = global_indices[local_idx]
+        return medoids
+
+    def cluster_models_to_startmodel(self, cluster_l2, thicknesses, n_soundings, default_res,
+                                     raw_medoid_indices=None):
+        """Map cluster inverted resistivities into a ``(n_soundings * n_layers,)`` start model.
+
+        Must call ``fit()`` first.  raw_medoid_indices maps cluster k to its row
+        in cluster_l2 (needed when cluster_l2 spans the full dataset after unfilter).
+        """
+        n_layers = len(thicknesses) + 1
+        startmodel = np.full(n_soundings * n_layers, np.log(1.0 / default_res))
+        if 'resistivity' not in cluster_l2.layer_data:
+            return startmodel
+        cluster_res = cluster_l2.layer_data['resistivity'].values
+        for i, k in enumerate(self.cluster_ids_):
+            row = raw_medoid_indices[int(k)] if raw_medoid_indices is not None else int(k)
+            res_k = cluster_res[row]
+            valid = np.isfinite(res_k) & (res_k > 0)
+            fallback = np.full_like(res_k, default_res)
+            startmodel[i * n_layers:(i + 1) * n_layers] = np.log(1.0 / np.where(valid, res_k, fallback))
+        return startmodel
+
 
 class XYZSystem(object):
     """This is a base class for system descriptions for moving EM
@@ -108,13 +237,13 @@ class XYZSystem(object):
 
     @property
     def gate_filter(self):
-        times = self.times_filter
         filt = {}
         for key in self._xyz.layer_data.keys():
             match = re.match(r"^[^0-9]*([0-9]+).*", key)
             if match is None: continue
             channel = int(match.groups()[0]) - 1
-            filt[key] = self.times_filter[channel]
+            n_gates = self._xyz.layer_data[key].shape[1]
+            filt[key] = self.times_filter[channel][:n_gates]
         return filt
         
     @property
@@ -203,7 +332,7 @@ class XYZSystem(object):
         else:
             uncertainties = self.uncertainties__std_data*np.abs(self.data_array_nan) + noise
         
-        return np.where(np.isnan(self.data_array_nan), np.Inf, uncertainties)
+        return np.where(np.isnan(self.data_array_nan), np.inf, uncertainties)
 
     startmodel__thicknesses_type: typing.Literal['logspaced', 'geometric', 'time'] = "logspaced"
     "Layer thickness scheme. 'logspaced': layers increase in thickness logarithmically from top to bottom — recommended for most AEM surveys. 'geometric': each layer is a fixed ratio thicker than the one above (set ratio with 'thicknesses_geometric_factor'). 'time': layer boundaries are scaled to gate times (good for data-adaptive depth discretization)."
@@ -305,9 +434,86 @@ class XYZSystem(object):
     
     startmodel__res=100.
     "Uniform starting resistivity (Ω·m). All soundings begin from a homogeneous halfspace at this value. Should be a reasonable estimate of the background resistivity — a poor choice increases iteration count. Typical values: 10 Ω·m (conductive settings, e.g. saline groundwater), 100 Ω·m (moderate), 1000 Ω·m (resistive, e.g. crystalline rock or dry alluvium)."
+
+    clustering__enabled = False
+    "Set to True to cluster soundings before inversion. K is selected automatically via the Kneedle algorithm (requires the kneed package)."
+    clustering__k_range = range(2, 20)
+    "K values scanned when selecting the number of clusters automatically."
+    clustering__random_seed = None
+    "Random seed for K-means reproducibility."
+    clustering__valid_gate_threshold = 0.5
+    "Gates present in fewer than this fraction of soundings are excluded from the feature vector."
+
+    def _make_clusterer(self):
+        return XYZClusterer(
+            xyz=self.xyz,
+            k_range=self.clustering__k_range,
+            random_seed=self.clustering__random_seed,
+            valid_gate_threshold=self.clustering__valid_gate_threshold,
+        )
+
     def make_startmodel(self, thicknesses):
-        startmodel=np.log(np.ones(self.n_param(thicknesses)) * 1/self.startmodel__res)
+        if not self.clustering__enabled:
+            return np.log(np.ones(self.n_param(thicknesses)) * 1/self.startmodel__res)
+
+        # Cached: make_regularization → make_mref → make_startmodel triggers the cluster
+        # inversion; inv.run(make_startmodel(...)) then returns the same array cheaply.
+        if hasattr(self, '_cached_cluster_startmodel'):
+            return self._cached_cluster_startmodel
+
+        clusterer = self._make_clusterer()
+        self._clusterer = clusterer
+        print(f"Clustering: fitting {len(self.xyz.flightlines)} soundings")
+        self._cluster_ids = clusterer.fit()
+
+        # Medoid indices are into self.xyz (filtered, 0-based).  Map them to
+        # raw _xyz indices so the child can filter exactly once, the same way
+        # the parent does, avoiding any double-filter width mismatch.
+        medoid_filtered = clusterer.medoid_indices_
+        sf = self.sounding_filter
+        if isinstance(sf, slice):
+            raw_medoid_indices = medoid_filtered
+        elif hasattr(sf, 'dtype') and sf.dtype == bool:
+            raw_medoid_indices = np.where(sf)[0][medoid_filtered]
+        else:
+            raw_medoid_indices = np.asarray(sf)[medoid_filtered]
+
+        print(f"Clustering: inverting {clusterer.n_clusters_} medoid soundings")
+
+        # Inherit the parent's options (n_layer, n_cpu, gate_filter__*, etc.),
+        # excluding clustering namespaces.  The child uses self._xyz directly with
+        # sounding_filter selecting only the K medoid rows; its gate filter is
+        # applied once, identically to the parent — no special time overrides needed.
+        cluster_opts = {
+            key: val for key, val in self.options.items()
+            if not (key.startswith('clustering__') or key.startswith('cluster_inversion__'))
+        }
+        cluster_opts['clustering__enabled'] = False  # prevent recursion
+        cluster_opts['validate'] = False
+        cluster_opts['regularization__alpha_r'] = 0
+        cluster_opts['sounding_filter'] = raw_medoid_indices
+        for key, val in self.options.items():
+            if key.startswith('cluster_inversion__'):
+                cluster_opts[key[len('cluster_inversion__'):]] = val
+
+        cluster_system = type(self)(self._xyz, **cluster_opts)
+        self._cluster_system = cluster_system  # expose for diagnostics (iteration count)
+        _, cluster_l2 = cluster_system.invert()
+
+        startmodel = clusterer.cluster_models_to_startmodel(
+            cluster_l2, thicknesses, len(self.xyz.flightlines), self.startmodel__res,
+            raw_medoid_indices=raw_medoid_indices)
+        self._cached_cluster_startmodel = startmodel
         return startmodel
+
+    regularization__mref = 'startmodel'
+    "Reference model for regularization: 'startmodel' (default) uses the cluster-derived start model; 'halfspace' uses a flat halfspace at startmodel__res."
+
+    def make_mref(self, thicknesses):
+        """Return the reference model for regularization."""
+        if self.regularization__mref == 'halfspace':
+            return np.log(np.ones(self.n_param(thicknesses)) * 1/self.startmodel__res)
+        return self.make_startmodel(thicknesses)
 
     # FIXME!!! Should alpha_s's default be set to something based off the model domain?
     #  https://giftoolscookbook.readthedocs.io/en/latest/content/fundamentals/Alphas.html
@@ -342,7 +548,7 @@ class XYZSystem(object):
             # reg.get_grad_horizontal(self.xyz.flightlines[["x", "y"]], hz, dim=2, use_cell_weights=True)
             # ps, px, py = 0, 0, 0
             # reg.norms = np.c_[ps, px, py, 0]
-            reg.mref = self.make_startmodel(thicknesses)
+            reg.mref = self.make_mref(thicknesses)
             # reg.mrefInSmooth = False
             return reg
         else:
@@ -364,7 +570,7 @@ class XYZSystem(object):
                 alpha_r = self.regularization__alpha_r,
                 alpha_z = self.regularization__alpha_z,
             )
-            reg.mref = self.make_startmodel(thicknesses)
+            reg.mref = self.make_mref(thicknesses)
             return reg
 
     directives__beta__seed : int = None
@@ -480,6 +686,15 @@ class XYZSystem(object):
             self.sparsepred = None
             self.l2 = last_model
             self.l2pred = last_pred
+
+        if hasattr(self, '_cluster_ids'):
+            # Map cluster IDs back to the full (unfiltered) sounding set
+            cluster_id_full = pd.Series(np.nan, index=self._xyz.flightlines.index, dtype=float)
+            cluster_id_full.loc[self.xyz.flightlines.index] = self._cluster_ids.astype(float)
+            for obj in [self.sparse, self.l2, self.l2pred, self.sparsepred, self.corrected]:
+                if obj is not None:
+                    obj.flightlines = obj.flightlines.copy()
+                    obj.flightlines['cluster_id'] = cluster_id_full.values
 
     def split_moments(self, resp):
         moments = []

@@ -100,9 +100,13 @@ class DualMomentTEMXYZSystem(base.XYZSystem):
 
     @property
     def correct_tilt_pitch_for1Dinv(self):
-        cos_roll = np.cos(self.xyz.flightlines.tilt_x.values/180*np.pi)
-        cos_pitch = np.cos(self.xyz.flightlines.tilt_y.values/180*np.pi)
-        return 1 / (cos_roll * cos_pitch)**2
+        fl = self.xyz.flightlines
+        n = len(fl)
+        if 'tilt_x' in fl.columns and 'tilt_y' in fl.columns:
+            cos_roll = np.cos(fl.tilt_x.values / 180 * np.pi)
+            cos_pitch = np.cos(fl.tilt_y.values / 180 * np.pi)
+            return 1 / (cos_roll * cos_pitch) ** 2
+        return np.ones(n)
     
     @property
     def lm_data(self):
