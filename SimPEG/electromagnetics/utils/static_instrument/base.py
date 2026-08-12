@@ -309,25 +309,61 @@ class XYZSystem(object):
         startmodel=np.log(np.ones(self.n_param(thicknesses)) * 1/self.startmodel__res)
         return startmodel
 
-    # FIXME!!! Should alpha_s's default be set to something based off the model domain?
-    #  https://giftoolscookbook.readthedocs.io/en/latest/content/fundamentals/Alphas.html
-    #  Here it talks about how how alpha_s is often set to
-    #  alpha_s = 1/(h**2),
-    #  where h is the cell size dimension for the core region.
-    #  for us h could be
-    #    1) the height of the last, non-halfspace layer,
-    #    2) the average thickness of our model domain,
-    #    3) the average sounding spacing.
-    #    4) 1e-4 as proposed in the link above
-    #    5) line spacing (if 100m then alpha_s = 1e-4, if 400m then 6.3e-6)
-    #    6) geomean of the linespacing and sounding spacing: sqrt(line_space * sound_space)
-    #        - 25m sounding spacing, 100m line spacing: h=50, alpha_s=4e-4
     regularization__alpha_s = 1e-4
-    "Smallness weight — penalizes deviation of each layer from the reference (starting) model. Larger values anchor the model more strongly to 'startmodel__res'. A rule of thumb: alpha_s ≈ 1 / (sounding_spacing × line_spacing) in m⁻². For 25 m sounding spacing and 100 m line spacing: alpha_s ≈ 4e-4. Too large: model is too smooth and resistivity extremes are suppressed. Too small: unconstrained model, may fit noise."
+    """Smallness weight — anchors every model cell toward the reference resistivity (startmodel__res).
+
+    Unlike alpha_r and alpha_z, which enforce smoothness between neighboring cells, alpha_s acts
+    globally: it adds a cost for any cell that deviates from the reference model, regardless of its
+    neighbors. This is important in poorly-sampled regions (deep layers, survey edges) where the
+    data have little sensitivity — without alpha_s the model is free to drift to arbitrary values in
+    those regions.
+
+    IMPORTANT: alpha_s does NOT control lateral resolution. To suppress short-wavelength lateral
+    structure, increase alpha_r instead. alpha_s only controls how strongly the whole model is pulled
+    toward the starting resistivity.
+
+    Scaling: alpha_s ≈ 1/h², where h is the geometric mean of sounding spacing and line spacing.
+    This keeps alpha_s numerically comparable to the smoothness terms (alpha_r, alpha_z = 1.0 by default):
+      - 25 m sounding / 100 m line spacing  →  h = 50 m  →  alpha_s ≈ 4e-4
+      - 30 m sounding / 100 m line spacing  →  h = 55 m  →  alpha_s ≈ 3e-4
+      - 100 m sounding / 100 m line spacing →  h = 100 m →  alpha_s ≈ 1e-4  (default)
+      - 25 m sounding / 400 m line spacing  →  h = 100 m →  alpha_s ≈ 1e-4
+
+    Too large: resistivity contrasts are suppressed and the model sits near startmodel__res everywhere.
+    Too small: the model drifts freely in low-sensitivity regions, producing depth artifacts or
+    spurious structure between flight lines.
+    """
     regularization__alpha_r = 1.
-    "Lateral (along-line) smoothness weight — penalizes resistivity differences between neighboring soundings. The ratio alpha_r / alpha_z controls lateral vs. vertical smoothing. Default 1:1 is isotropic. Increase alpha_r relative to alpha_z to enforce more lateral continuity (useful for layered geology)."
+    """Lateral smoothness weight — penalizes resistivity differences between neighboring soundings.
+
+    This is the primary control on effective lateral resolution. The inversion links soundings via
+    a Delaunay triangulation of their positions, and alpha_r scales how strongly adjacent soundings
+    are pulled toward each other.
+
+    To target an effective lateral resolution D with sounding spacing d, set:
+        alpha_r ≈ (D / d)² × alpha_z
+    For example, with 30 m sounding spacing and a target resolution of ~100 m:
+        alpha_r ≈ (100/30)² × 1.0 ≈ 10
+
+    alpha_r has no effect on vertical structure within a sounding — use alpha_z for that.
+    The default (1.0, isotropic with alpha_z) is appropriate when the sounding spacing already
+    matches your desired lateral resolution. Increase alpha_r for laterally continuous geology
+    (e.g., sedimentary basins); keep it low if you expect sharp lateral boundaries.
+    """
     regularization__alpha_z = 1.
-    "Vertical smoothness weight — penalizes resistivity differences between adjacent layers in a sounding. The ratio alpha_z / alpha_r controls vertical vs. lateral smoothing. Increase alpha_z relative to alpha_r to enforce more layered structure (i.e., smoother depth profiles)."
+    """Vertical smoothness weight — penalizes resistivity differences between adjacent layers within each sounding.
+
+    Controls how sharply resistivity is allowed to change with depth. The ratio alpha_z / alpha_r
+    sets the anisotropy of the regularization:
+      - alpha_z = alpha_r (default): isotropic — lateral and vertical gradients are penalized equally.
+      - alpha_z > alpha_r: enforces stronger vertical smoothness, useful for environments with
+        well-defined horizontal layering and little lateral variation.
+      - alpha_z < alpha_r: allows more vertical structure while enforcing lateral continuity, useful
+        when you expect sharp boundaries at depth but a laterally uniform stratigraphy.
+
+    Note that the absolute values of alpha_r and alpha_z matter less than their ratio — doubling
+    both changes nothing about the model shape, only about how alpha_s balances against smoothness.
+    """
 
     def make_regularization(self, thicknesses):
         if False:
@@ -367,8 +403,8 @@ class XYZSystem(object):
             reg.mref = self.make_startmodel(thicknesses)
             return reg
 
-    directives__beta__seed : int = None
-    "Random seed for the beta estimator. Set to a fixed integer for reproducible results across runs. Leave blank (None) for random initialization."
+    directives__beta__seed : int = 42
+    "Random seed for the beta estimator. Fixed value ensures reproducible results across runs with identical parameters. Change to any integer for a different (but still reproducible) initialization, or clear to use a random seed each run."
     directives__beta__beta0_ratio : float = 10.
     "Initial regularization strength as a multiple of the estimated optimal beta. Higher values (10–100) start with a heavily smoothed model and relax regularization gradually — this is the standard Tikhonov approach and typically converges in 20–30 iterations. Values near 1 give the data too much control immediately, leading to slow or erratic convergence. Recommended: 10–50."
     directives__beta__cooling_factor=2
