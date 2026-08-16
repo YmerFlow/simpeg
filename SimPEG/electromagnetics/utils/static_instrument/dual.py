@@ -32,6 +32,41 @@ from SimPEG.regularization import LaterallyConstrained, RegularizationMesh
 import scipy.stats
 from . import base
 import typing
+import warnings
+
+
+def _channel_field(gex, channel, field):
+    """A per-channel GEX field, or None where the file does not declare it.
+
+    Written to tolerate both a missing channel and a missing field, because a
+    partial or hand-built GEX legitimately has neither, and a validation helper
+    must not be the thing that raises.
+    """
+    try:
+        return gex.gex_dict["Channel%d" % channel][field]
+    except (KeyError, AttributeError, TypeError):
+        return None
+
+
+def _declared_rx_orientation(gex):
+    """The receiver orientation the GEX declares, lowercased, or None.
+
+    Only returned when every channel agrees. Channels disagreeing means the
+    file is not describing a single-orientation instrument, and picking one of
+    them would be a guess — :meth:`DualMomentTEMXYZSystem.do_validate` reports
+    that case rather than this one resolving it.
+    """
+    orientations = set()
+    for channel in (1, 2):
+        value = _channel_field(gex, channel, "ReceiverPolarizationXYZ")
+        if value is None:
+            return None
+        orientations.add(str(value).strip().lower())
+    if len(orientations) != 1:
+        return None
+    orientation = orientations.pop()
+    return orientation if orientation in ("x", "y", "z") else None
+
 
 class DualMomentTEMXYZSystem(base.XYZSystem):
     """Dual moment system, suitable for describing e.g. the SkyTEM
@@ -68,12 +103,86 @@ class DualMomentTEMXYZSystem(base.XYZSystem):
         """Accepts a GEX file loaded using libaarhusxyz.GEX() and
         returns a new subclass of XYZSystem that can be used to do
         inversion and forward modelling."""
-        
+
         class GexSystem(cls):
             pass
         GexSystem.gex = gex
-        return GexSystem   
+
+        # Take the receiver orientation from the instrument rather than the
+        # class default where the GEX declares one. The file knows; assuming
+        # 'z' silently models a vertical receiver even when handed data from a
+        # horizontal one. Still overridable at instantiation, since this only
+        # sets the class attribute.
+        declared = _declared_rx_orientation(gex)
+        if declared is not None:
+            GexSystem.rx_orientation = declared
+
+        return GexSystem
     
+    def do_validate(self):
+        """Check the scaling, then that channels 1 and 2 really are the two moments.
+
+        This class maps ``dbdt_ch1gt`` to the low moment and ``dbdt_ch2gt`` to
+        the high moment by name, and applies each channel's ``GateFactor``,
+        ``ApproxDipoleMoment`` and gate times accordingly. Nothing in that
+        mapping is derived from the data — so on a dataset whose channels are
+        not LM-then-HM it inverts the wrong arrays and returns a model rather
+        than an error.
+
+        Two ways that happens in practice:
+
+        - **Channel order.** A GEX whose two channel blocks are written high
+          moment first. A text-ordering mistake, not an exotic instrument.
+        - **Multi-component receivers.** One channel per (moment, component)
+          pair, so a three-component dual-moment instrument declares six.
+          Ordered LM/X, LM/Y, LM/Z, HM/X..., channels 1 and 2 are the same
+          moment on two different axes.
+
+        Both checks below are cheap and use only fields a GEX already carries.
+        Where a field is absent the check is skipped with a warning rather than
+        failing, since a partial or hand-built GEX legitimately lacks them.
+        """
+        super().do_validate()
+
+        # Physics, not labels. The low moment necessarily has the smaller
+        # dipole moment, whatever the file calls the channels — so this catches
+        # a reversed *and* a mislabelled GEX, where comparing TransmitterMoment
+        # strings would only catch the second.
+        lm_moment = _channel_field(self.gex, 1, "ApproxDipoleMoment")
+        hm_moment = _channel_field(self.gex, 2, "ApproxDipoleMoment")
+        if lm_moment is None or hm_moment is None:
+            warnings.warn(
+                "GEX does not declare ApproxDipoleMoment for both channels; "
+                "cannot confirm that channel 1 is the low moment.")
+        else:
+            assert lm_moment < hm_moment, (
+                "Channel1 dipole moment (%.0f A m^2) is not below Channel2's "
+                "(%.0f A m^2). This class reads channel 1 as the low moment and "
+                "channel 2 as the high moment; that mapping does not hold for "
+                "this instrument, and inverting anyway would apply the wrong "
+                "gate factors and gate times." % (lm_moment, hm_moment))
+
+        # Receiver orientation. Channels differing here means they are not two
+        # moments of one measurement — most likely two components of one moment.
+        lm_rx = _channel_field(self.gex, 1, "ReceiverPolarizationXYZ")
+        hm_rx = _channel_field(self.gex, 2, "ReceiverPolarizationXYZ")
+        if lm_rx is None or hm_rx is None:
+            warnings.warn(
+                "GEX does not declare ReceiverPolarizationXYZ for both channels; "
+                "cannot confirm that they share a receiver orientation.")
+        else:
+            lm_rx, hm_rx = str(lm_rx).strip().lower(), str(hm_rx).strip().lower()
+            assert lm_rx == hm_rx, (
+                "Channel1 and Channel2 declare different receiver orientations "
+                "(%r and %r). This class expects them to be the low and high "
+                "moments of one measurement; differing orientations suggest they "
+                "are two components of the same moment, in which case channel 1 "
+                "and channel 2 are not the two moments." % (lm_rx, hm_rx))
+            assert lm_rx == self.rx_orientation, (
+                "GEX declares a %r receiver but the system is configured to model "
+                "a %r one. Set rx_orientation to match the data, or correct the "
+                "GEX." % (lm_rx, self.rx_orientation))
+
     @property
     def sounding_filter(self):
         if "dbdt_ch1gt" in self._xyz.layer_data and "dbdt_ch2gt" in self._xyz.layer_data:
@@ -100,9 +209,21 @@ class DualMomentTEMXYZSystem(base.XYZSystem):
 
     @property
     def correct_tilt_pitch_for1Dinv(self):
-        cos_roll = np.cos(self.xyz.flightlines.tilt_x.values/180*np.pi)
-        cos_pitch = np.cos(self.xyz.flightlines.tilt_y.values/180*np.pi)
-        return 1 / (cos_roll * cos_pitch)**2
+        """Scale amplitudes to what a level transmitter would have measured.
+
+        ``tilt_x`` is **pitch** and ``tilt_y`` is **roll**: x lies along the
+        flight direction, so it measures nose-up/down. ``libaarhusxyz`` resolves
+        them the same way — ``tilt_pitch_column`` matches ``tilt_x``/``TxPitch``
+        and ``tilt_roll_column`` matches ``tilt_y``/``TxRoll``.
+
+        The product is symmetric so the correction is unaffected by which name
+        is attached to which axis, but the two are not interchangeable to a
+        reader — sustained roll means a turn or a crosswind crab, sustained
+        pitch means terrain following.
+        """
+        cos_pitch = np.cos(self.xyz.flightlines.tilt_x.values/180*np.pi)
+        cos_roll = np.cos(self.xyz.flightlines.tilt_y.values/180*np.pi)
+        return 1 / (cos_pitch * cos_roll)**2
     
     @property
     def lm_data(self):
