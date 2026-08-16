@@ -33,6 +33,23 @@ import scipy.stats
 from . import base
 import typing
 import warnings
+import re
+
+
+def _channel_indices(gex):
+    """The channel indices a GEX actually declares, ascending.
+
+    ``gex.number_channels`` counts keys containing "Channel"; it does not say
+    which. A file holding ``Channel3`` and ``Channel6`` reports 2, so probing
+    ``range(1, number_channels + 1)`` looks at channels 1 and 2 and finds
+    nothing. The indices have to be read off the keys.
+    """
+    indices = []
+    for key in (getattr(gex, "gex_dict", None) or {}):
+        match = re.fullmatch(r"Channel(\d+)", str(key))
+        if match:
+            indices.append(int(match.group(1)))
+    return sorted(indices)
 
 
 def _channel_field(gex, channel, field):
@@ -119,77 +136,193 @@ class DualMomentTEMXYZSystem(base.XYZSystem):
 
         return GexSystem
     
+    @property
+    def moment_channels(self):
+        """``(low, high)`` channel indices, resolved by physics rather than position.
+
+        The two moments do not have to sit at channels 1 and 2. Among the
+        channels measuring the orientation being modelled, the low moment is the
+        one with the smallest ``ApproxDipoleMoment`` and the high moment the
+        largest — which is true whatever the file numbers them, and whatever it
+        calls them.
+
+        This matters for any instrument declaring one channel per
+        (moment, component) pair. A three-component dual-moment system declares
+        six channels, ordered LM/X LM/Y LM/Z HM/X HM/Y HM/Z; the two vertical
+        ones are 3 and 6. Those are the right channels, simply not numbered 1
+        and 2, and without this they would have to be renamed before anything
+        could invert them.
+
+        Falls back to ``(1, 2)`` with a warning where the GEX declares neither
+        field, which is the behaviour established for partial and hand-built
+        files.
+        """
+        indices = _channel_indices(self.gex)
+        if not indices:
+            warnings.warn("GEX declares no Channel blocks; assuming channels 1 and 2.")
+            return (1, 2)
+
+        # Only channels measuring what is being modelled are candidates. On a
+        # multi-component instrument this is what separates "the other moment"
+        # from "the same moment on another axis".
+        wanted = str(self.rx_orientation).strip().lower()
+        candidates = []
+        for index in indices:
+            declared = _channel_field(self.gex, index, "ReceiverPolarizationXYZ")
+            if declared is None or str(declared).strip().lower() == wanted:
+                candidates.append(index)
+        if not candidates:
+            warnings.warn(
+                "No channel declares a %r receiver; considering all %d channels."
+                % (wanted, len(indices)))
+            candidates = indices
+
+        moments = {i: _channel_field(self.gex, i, "ApproxDipoleMoment")
+                   for i in candidates}
+        known = {i: m for i, m in moments.items() if m is not None}
+
+        if len(known) < 2:
+            warnings.warn(
+                "GEX does not declare ApproxDipoleMoment for at least two %r "
+                "channels; falling back to channels 1 and 2." % wanted)
+            return (1, 2)
+
+        ordered = sorted(known, key=lambda i: known[i])
+        return (ordered[0], ordered[-1])
+
+    @property
+    def lm_channel(self):
+        return self.moment_channels[0]
+
+    @property
+    def hm_channel(self):
+        return self.moment_channels[1]
+
+    def _gate_key(self, channel, kind=""):
+        """The ``layer_data`` array name for a channel — ``dbdt_std_ch3gt`` etc."""
+        return "dbdt_%sch%dgt" % (kind, channel)
+
+    def _usable(self, channel):
+        """Per-datum mask: finite value, finite uncertainty, and flagged in use."""
+        data = self._xyz.layer_data[self._gate_key(channel)].values
+        std = self._xyz.layer_data[self._gate_key(channel, "std_")].values
+        inuse = self._xyz.layer_data[self._gate_key(channel, "inuse_")]
+        return np.isfinite(data) & np.isfinite(std) & inuse
+
     def do_validate(self):
-        """Check the scaling, then that channels 1 and 2 really are the two moments.
+        """Check the scaling, then that the resolved channels are the two moments.
 
-        This class maps ``dbdt_ch1gt`` to the low moment and ``dbdt_ch2gt`` to
-        the high moment by name, and applies each channel's ``GateFactor``,
-        ``ApproxDipoleMoment`` and gate times accordingly. Nothing in that
-        mapping is derived from the data — so on a dataset whose channels are
-        not LM-then-HM it inverts the wrong arrays and returns a model rather
-        than an error.
+        The pair is chosen by :attr:`moment_channels`, which reads dipole moment
+        and receiver orientation rather than assuming positions 1 and 2. These
+        checks confirm the pair it found is coherent, so the two are
+        complementary: resolution makes the common awkward cases work, and
+        validation catches the ones where no sensible pair exists.
 
-        Two ways that happens in practice:
+        What still fails, correctly:
 
-        - **Channel order.** A GEX whose two channel blocks are written high
-          moment first. A text-ordering mistake, not an exotic instrument.
-        - **Multi-component receivers.** One channel per (moment, component)
-          pair, so a three-component dual-moment instrument declares six.
-          Ordered LM/X, LM/Y, LM/Z, HM/X..., channels 1 and 2 are the same
-          moment on two different axes.
+        - an instrument whose two candidate channels have equal dipole moments,
+          so there is no low and high to distinguish
+        - a resolved pair whose orientations disagree, meaning they are two
+          components rather than two moments
+        - a GEX declaring one orientation while the system is configured to
+          model another
+        - gate-time tables that do not match the data — see
+          :meth:`_validate_gate_times`
 
-        Both checks below are cheap and use only fields a GEX already carries.
-        Where a field is absent the check is skipped with a warning rather than
-        failing, since a partial or hand-built GEX legitimately lacks them.
+        Each check uses only fields a GEX already carries. Where a field is
+        absent the check is skipped with a warning rather than failing, since a
+        partial or hand-built GEX legitimately lacks them.
         """
         super().do_validate()
 
-        # Physics, not labels. The low moment necessarily has the smaller
-        # dipole moment, whatever the file calls the channels — so this catches
-        # a reversed *and* a mislabelled GEX, where comparing TransmitterMoment
-        # strings would only catch the second.
-        lm_moment = _channel_field(self.gex, 1, "ApproxDipoleMoment")
-        hm_moment = _channel_field(self.gex, 2, "ApproxDipoleMoment")
+        lm, hm = self.moment_channels
+
+        # Physics, not labels. The low moment necessarily has the smaller dipole
+        # moment, whatever the file calls the channels — so this catches a
+        # mislabelled GEX as well as a misordered one, where comparing
+        # TransmitterMoment strings would only catch the second.
+        lm_moment = _channel_field(self.gex, lm, "ApproxDipoleMoment")
+        hm_moment = _channel_field(self.gex, hm, "ApproxDipoleMoment")
         if lm_moment is None or hm_moment is None:
             warnings.warn(
-                "GEX does not declare ApproxDipoleMoment for both channels; "
-                "cannot confirm that channel 1 is the low moment.")
+                "GEX does not declare ApproxDipoleMoment for channels %d and %d; "
+                "cannot confirm which is the low moment." % (lm, hm))
         else:
             assert lm_moment < hm_moment, (
-                "Channel1 dipole moment (%.0f A m^2) is not below Channel2's "
-                "(%.0f A m^2). This class reads channel 1 as the low moment and "
-                "channel 2 as the high moment; that mapping does not hold for "
-                "this instrument, and inverting anyway would apply the wrong "
-                "gate factors and gate times." % (lm_moment, hm_moment))
+                "Resolved channels %d and %d have dipole moments %.0f and %.0f A m^2. "
+                "The low moment must be the smaller; this instrument does not give "
+                "two distinguishable moments on the %r receiver."
+                % (lm, hm, lm_moment, hm_moment, self.rx_orientation))
 
-        # Receiver orientation. Channels differing here means they are not two
-        # moments of one measurement — most likely two components of one moment.
-        lm_rx = _channel_field(self.gex, 1, "ReceiverPolarizationXYZ")
-        hm_rx = _channel_field(self.gex, 2, "ReceiverPolarizationXYZ")
+        # Receiver orientation. The pair must measure the same thing; differing
+        # orientations mean they are two components rather than two moments.
+        lm_rx = _channel_field(self.gex, lm, "ReceiverPolarizationXYZ")
+        hm_rx = _channel_field(self.gex, hm, "ReceiverPolarizationXYZ")
         if lm_rx is None or hm_rx is None:
             warnings.warn(
-                "GEX does not declare ReceiverPolarizationXYZ for both channels; "
-                "cannot confirm that they share a receiver orientation.")
+                "GEX does not declare ReceiverPolarizationXYZ for channels %d and %d; "
+                "cannot confirm they share a receiver orientation." % (lm, hm))
         else:
             lm_rx, hm_rx = str(lm_rx).strip().lower(), str(hm_rx).strip().lower()
             assert lm_rx == hm_rx, (
-                "Channel1 and Channel2 declare different receiver orientations "
-                "(%r and %r). This class expects them to be the low and high "
-                "moments of one measurement; differing orientations suggest they "
-                "are two components of the same moment, in which case channel 1 "
-                "and channel 2 are not the two moments." % (lm_rx, hm_rx))
+                "Resolved channels %d and %d declare different receiver orientations "
+                "(%r and %r), so they are two components of one moment rather than "
+                "two moments." % (lm, hm, lm_rx, hm_rx))
             assert lm_rx == self.rx_orientation, (
                 "GEX declares a %r receiver but the system is configured to model "
                 "a %r one. Set rx_orientation to match the data, or correct the "
                 "GEX." % (lm_rx, self.rx_orientation))
 
+        self._validate_gate_times(lm, hm)
+
+    def _validate_gate_times(self, lm, hm):
+        """Catch the one gap the physics-based resolution does not close.
+
+        Channels are resolved by dipole moment and orientation, but
+        ``gex.gate_times()`` still resolves its table by *label*: it looks for
+        ``GateTime{TransmitterMoment}`` in ``General`` before falling back to a
+        shared ``GateTime``.
+
+        Those are not always the same table. DigiTEM-receiver systems carry
+        separate ``GateTimeLM`` and ``GateTimeHM``, and they are different
+        lengths — 25 and 41 gates on a 306HP, 21 and 40 on a 312HP — while
+        classic receivers such as the 304M share a single table.
+
+        So on a DigiTEM system whose ``TransmitterMoment`` is wrong, resolution
+        picks the right channel while ``gate_times`` fetches the wrong table.
+        Neither check above catches it: one trusts the physics, the other trusts
+        the label.
+
+        Rather than reimplement the lookup, compare what it returns against the
+        data it will be paired with. A wrong table on such a system is a length
+        mismatch, which is exactly what this sees.
+        """
+        for channel, name in ((lm, "low"), (hm, "high")):
+            key = self._gate_key(channel)
+            if key not in self._xyz.layer_data:
+                continue
+            try:
+                n_times = len(self.gex.gate_times(channel))
+            except Exception as exc:            # an unusable GEX is base's problem
+                warnings.warn("Could not read gate times for channel %d: %s"
+                              % (channel, exc))
+                continue
+            n_gates = self._xyz.layer_data[key].values.shape[1]
+            assert n_times == n_gates, (
+                "Channel %d (%s moment) has %d gates of data but its GEX gate-time "
+                "table has %d entries. On a system with separate GateTimeLM and "
+                "GateTimeHM tables this is what a wrong TransmitterMoment label "
+                "looks like — the channel is right, the gate times are not."
+                % (channel, name, n_gates, n_times))
+
     @property
     def sounding_filter(self):
-        if "dbdt_ch1gt" in self._xyz.layer_data and "dbdt_ch2gt" in self._xyz.layer_data:
+        lm_key, hm_key = (self._gate_key(c) for c in self.moment_channels)
+        if lm_key in self._xyz.layer_data and hm_key in self._xyz.layer_data:
             # Exclude soundings with no usable gates
-            ch1 = np.isfinite(self._xyz.dbdt_ch1gt.values) & np.isfinite(self._xyz.dbdt_std_ch1gt.values) & self._xyz.dbdt_inuse_ch1gt
-            ch2 = np.isfinite(self._xyz.dbdt_ch2gt.values) & np.isfinite(self._xyz.dbdt_std_ch2gt.values) & self._xyz.dbdt_inuse_ch2gt
-            return ch1.sum(axis=1) + ch2.sum(axis=1) > 0
+            lm = self._usable(self.moment_channels[0])
+            hm = self._usable(self.moment_channels[1])
+            return lm.sum(axis=1) + hm.sum(axis=1) > 0
         elif "resistivity" in self._xyz.layer_data:
             return np.isfinite(self._xyz.resistivity.values).sum(axis=1) > 0
         else:
@@ -225,32 +358,34 @@ class DualMomentTEMXYZSystem(base.XYZSystem):
         cos_roll = np.cos(self.xyz.flightlines.tilt_y.values/180*np.pi)
         return 1 / (cos_pitch * cos_roll)**2
     
+    def _moment_data(self, channel):
+        """dB/dt for one channel, tilt-corrected and gate-factored."""
+        dbdt = self.xyz.layer_data[self._gate_key(channel)].values
+        inuse_key = self._gate_key(channel, "inuse_")
+        if inuse_key in self.xyz.layer_data:
+            dbdt = np.where(self.xyz.layer_data[inuse_key] == 0, np.nan, dbdt)
+        tiltcorrection = self.correct_tilt_pitch_for1Dinv
+        tiltcorrection = np.tile(tiltcorrection, (dbdt.shape[1], 1)).T
+        gate_factor = _channel_field(self.gex, channel, "GateFactor")
+        return (- dbdt * self.xyz.model_info.get("scalefactor", 1)
+                * gate_factor * tiltcorrection)
+
     @property
     def lm_data(self):
-        dbdt = self.xyz.dbdt_ch1gt.values
-        if "dbdt_inuse_ch1gt" in self.xyz.layer_data:
-            dbdt = np.where(self.xyz.dbdt_inuse_ch1gt == 0, np.nan, dbdt)
-        tiltcorrection = self.correct_tilt_pitch_for1Dinv
-        tiltcorrection = np.tile(tiltcorrection, (dbdt.shape[1], 1)).T
-        return - dbdt * self.xyz.model_info.get("scalefactor", 1) * self.gex.Channel1['GateFactor'] * tiltcorrection
-    
+        return self._moment_data(self.moment_channels[0])
+
     @property
     def hm_data(self):
-        dbdt = self.xyz.dbdt_ch2gt.values
-        if "dbdt_inuse_ch2gt" in self.xyz.layer_data:
-            dbdt = np.where(self.xyz.dbdt_inuse_ch2gt == 0, np.nan, dbdt)
-        tiltcorrection = self.correct_tilt_pitch_for1Dinv
-        tiltcorrection = np.tile(tiltcorrection, (dbdt.shape[1], 1)).T
-        return - dbdt * self.xyz.model_info.get("scalefactor", 1) * self.gex.Channel2['GateFactor'] * tiltcorrection
+        return self._moment_data(self.moment_channels[1])
 
     # NOTE: dbdt_std is a fraction, not an actual standard deviation size!
     @property
     def lm_std(self):
-        return self.xyz.dbdt_std_ch1gt.values
+        return self.xyz.layer_data[self._gate_key(self.moment_channels[0], "std_")].values
     
     @property
     def hm_std(self):
-        return self.xyz.dbdt_std_ch2gt.values
+        return self.xyz.layer_data[self._gate_key(self.moment_channels[1], "std_")].values
 
     @property
     def data_array_nan(self):
@@ -262,13 +397,13 @@ class DualMomentTEMXYZSystem(base.XYZSystem):
 
     @property
     def dipole_moments(self):
-        return [self.gex.gex_dict['Channel1']['ApproxDipoleMoment'],
-                self.gex.gex_dict['Channel2']['ApproxDipoleMoment']]
+        return [_channel_field(self.gex, c, 'ApproxDipoleMoment')
+                for c in self.moment_channels]
         
     @property
     def times_full(self):
-        return (np.array(self.gex.gate_times('Channel1')[:,0]),
-                np.array(self.gex.gate_times('Channel2')[:,0]))    
+        return tuple(np.array(self.gex.gate_times(c)[:, 0])
+                     for c in self.moment_channels)    
 
     @property
     def times_filter(self):        
