@@ -276,27 +276,54 @@ class DualMomentTEMXYZSystem(base.XYZSystem):
         self._validate_gate_times(lm, hm)
 
     def _validate_gate_times(self, lm, hm):
-        """Catch the one gap the physics-based resolution does not close.
+        """Partial cover for the one gap physics-based resolution does not close.
 
         Channels are resolved by dipole moment and orientation, but
-        ``gex.gate_times()`` still resolves its table by *label*: it looks for
+        ``gex.gate_times()`` still resolves its *table* by label — it looks for
         ``GateTime{TransmitterMoment}`` in ``General`` before falling back to a
-        shared ``GateTime``.
+        shared ``GateTime``. So a wrong ``TransmitterMoment`` selects the right
+        channel and fetches the wrong times, and neither check above sees it:
+        one trusts the physics, the other trusts the label.
 
-        Those are not always the same table. DigiTEM-receiver systems carry
-        separate ``GateTimeLM`` and ``GateTimeHM``, and they are different
-        lengths — 25 and 41 gates on a 306HP, 21 and 40 on a 312HP — while
-        classic receivers such as the 304M share a single table.
+        **What is checked**
 
-        So on a DigiTEM system whose ``TransmitterMoment`` is wrong, resolution
-        picks the right channel while ``gate_times`` fetches the wrong table.
-        Neither check above catches it: one trusts the physics, the other trusts
-        the label.
+        The two resolved channels must carry different ``TransmitterMoment``
+        values. Identical labels mean both fetch the same table, which is wrong
+        on any system defining one per moment.
 
-        Rather than reimplement the lookup, compare what it returns against the
-        data it will be paired with. A wrong table on such a system is a length
-        mismatch, which is exactly what this sees.
+        Gate-time count must match the data. Length is set per channel by
+        ``NoGates``, not by which table was read, so this only bites when the
+        wrongly-selected table is *shorter* than ``NoGates`` — the slice then
+        runs out. On a 306HP with the two labels swapped, the high-moment
+        channel asks for 41 times from the 25-entry low-moment table and is
+        caught; the low-moment channel asks for 25 from the 41-entry table, gets
+        25, and is not.
+
+        **What is not checked, and why nothing here can be**
+
+        A single mislabelled channel whose wrong table is long enough passes
+        both. There is no invariant left to exploit:
+
+        - Gate times are not positive. Every high-moment channel to hand starts
+          before turn-off — −3.7 µs on a 306HP with no shift applied, −41 µs on
+          a 312HP — so a negative value is normal rather than a symptom.
+        - Monotonicity holds for the wrong table as readily as the right one.
+        - Table lengths are not fixed by anything. A 304M defines one shared
+          table and a 306HP two separate ones purely because the systems were
+          described differently; the same instrument could be written either
+          way.
+
+        The tables are arbitrary per-system data, so the only real defence is
+        the label being right. This narrows the window rather than closing it.
         """
+        lm_label = _channel_field(self.gex, lm, "TransmitterMoment")
+        hm_label = _channel_field(self.gex, hm, "TransmitterMoment")
+        if lm_label is not None and hm_label is not None:
+            assert str(lm_label).strip() != str(hm_label).strip(), (
+                "Channels %d and %d both declare TransmitterMoment %r, so both would "
+                "read the same gate-time table. On a system defining one table per "
+                "moment that is wrong for at least one of them." % (lm, hm, lm_label))
+
         for channel, name in ((lm, "low"), (hm, "high")):
             key = self._gate_key(channel)
             if key not in self._xyz.layer_data:
@@ -309,10 +336,9 @@ class DualMomentTEMXYZSystem(base.XYZSystem):
                 continue
             n_gates = self._xyz.layer_data[key].values.shape[1]
             assert n_times == n_gates, (
-                "Channel %d (%s moment) has %d gates of data but its GEX gate-time "
-                "table has %d entries. On a system with separate GateTimeLM and "
-                "GateTimeHM tables this is what a wrong TransmitterMoment label "
-                "looks like — the channel is right, the gate times are not."
+                "Channel %d (%s moment) has %d gates of data but its gate-time table "
+                "yields %d entries. Most likely its TransmitterMoment label points at "
+                "another moment's table, which is shorter than its NoGates."
                 % (channel, name, n_gates, n_times))
 
     @property
