@@ -52,7 +52,7 @@ class FilteredXYZ(libaarhusxyz.XYZ):
             unfilteredxyz.flightlines = copy.deepcopy(self.xyz.flightlines)
             for key in old.columns:
                 if key not in unfilteredxyz.flightlines:
-                    unfilteredxyz.flightlines[key] = np.NaN
+                    unfilteredxyz.flightlines[key] = np.nan
                 unfilteredxyz.flightlines.loc[self.get_soundingfilter(),key] = old[key].values            
             for key in xyz.layer_data.keys():
                 old = unfilteredxyz.layer_data[key]
