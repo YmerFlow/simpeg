@@ -85,6 +85,45 @@ def _declared_rx_orientation(gex):
     return orientation if orientation in ("x", "y", "z") else None
 
 
+def _inuse_mask(layer_data, key, shape):
+    """The in-use flags at ``key`` as a boolean mask, or all-True where absent.
+
+    Both readers of the in-use flags in this module go through here, so that a
+    dataset behaves the same whichever one looks at it. Previously they
+    disagreed: one indexed ``layer_data`` directly and raised ``KeyError`` on a
+    dataset with no in-use array, while the other guarded and carried on, so the
+    same file inverted through one path and failed through the other.
+
+    Two conventions are settled here.
+
+    **An absent array means every gate is in use.** That is what YmerFlow's
+    importer materializes anyway, so guarding agrees with the platform rather
+    than merely tolerating its absence. It also keeps the array optional for
+    anything building an ``XYZ`` by hand — a standalone processing run, a
+    synthetic forward model, a dataset whose ALC mapping happens not to name an
+    in-use column. Refusing those would make an optional array mandatory for no
+    gain, since "no flags" carries no evidence that any gate is bad.
+
+    **A non-finite flag means not in use.** NaN in an in-use array means
+    "unknown", and the choice is which way unknown should fall. Excluding is the
+    conservative direction: it drops a datum whose status nobody established,
+    where admitting it feeds unverified data to the inversion. The previous
+    ``flags == 0`` test fell the other way by accident rather than by decision,
+    because ``NaN == 0`` is False, so an unknown flag read as in use. Testing
+    finiteness here means no upstream convention about what may be written into
+    an in-use array has to hold for this reader to be safe.
+
+    ``shape`` is the shape of the gate data the mask accompanies, used only to
+    size the all-True mask for the absent case. Where the array is present its
+    own shape is kept, so a mask that does not match its data still raises
+    downstream instead of being silently reshaped into agreement.
+    """
+    if key not in layer_data:
+        return np.ones(shape, dtype=bool)
+    flags = np.asarray(layer_data[key], dtype=float)
+    return np.isfinite(flags) & (flags != 0)
+
+
 class DualMomentTEMXYZSystem(base.XYZSystem):
     """Dual moment system, suitable for describing e.g. the SkyTEM
     instruments. This class can not be directly instantiated, but
@@ -203,10 +242,20 @@ class DualMomentTEMXYZSystem(base.XYZSystem):
         return "dbdt_%sch%dgt" % (kind, channel)
 
     def _usable(self, channel):
-        """Per-datum mask: finite value, finite uncertainty, and flagged in use."""
+        """Per-datum mask: finite value, finite uncertainty, and flagged in use.
+
+        Reads the unfiltered ``_xyz`` rather than ``xyz``, because
+        :attr:`sounding_filter` is what builds the filtered view — going through
+        the property here would recurse.
+
+        The in-use flags come from :func:`_inuse_mask`, so an absent array reads
+        as all in use and a non-finite flag as not in use, matching
+        :meth:`_moment_data`.
+        """
         data = self._xyz.layer_data[self._gate_key(channel)].values
         std = self._xyz.layer_data[self._gate_key(channel, "std_")].values
-        inuse = self._xyz.layer_data[self._gate_key(channel, "inuse_")]
+        inuse = _inuse_mask(self._xyz.layer_data,
+                            self._gate_key(channel, "inuse_"), data.shape)
         return np.isfinite(data) & np.isfinite(std) & inuse
 
     def do_validate(self):
@@ -385,11 +434,17 @@ class DualMomentTEMXYZSystem(base.XYZSystem):
         return 1 / (cos_pitch * cos_roll)**2
     
     def _moment_data(self, channel):
-        """dB/dt for one channel, tilt-corrected and gate-factored."""
+        """dB/dt for one channel, tilt-corrected and gate-factored.
+
+        Gates not flagged in use become NaN, which is how the rest of the stack
+        already spells "no datum here". The flags come from :func:`_inuse_mask`,
+        so absence and non-finite flags are read the same way :meth:`_usable`
+        reads them.
+        """
         dbdt = self.xyz.layer_data[self._gate_key(channel)].values
-        inuse_key = self._gate_key(channel, "inuse_")
-        if inuse_key in self.xyz.layer_data:
-            dbdt = np.where(self.xyz.layer_data[inuse_key] == 0, np.nan, dbdt)
+        inuse = _inuse_mask(self.xyz.layer_data,
+                            self._gate_key(channel, "inuse_"), dbdt.shape)
+        dbdt = np.where(inuse, dbdt, np.nan)
         tiltcorrection = self.correct_tilt_pitch_for1Dinv
         tiltcorrection = np.tile(tiltcorrection, (dbdt.shape[1], 1)).T
         gate_factor = _channel_field(self.gex, channel, "GateFactor")
