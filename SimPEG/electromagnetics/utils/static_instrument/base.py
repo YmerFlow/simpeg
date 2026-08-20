@@ -203,7 +203,7 @@ class XYZSystem(object):
         else:
             uncertainties = self.uncertainties__std_data*np.abs(self.data_array_nan) + noise
         
-        return np.where(np.isnan(self.data_array_nan), np.Inf, uncertainties)
+        return np.where(np.isnan(self.data_array_nan), np.inf, uncertainties)
 
     startmodel__thicknesses_type: typing.Literal['logspaced', 'geometric', 'time'] = "logspaced"
     "Layer thickness scheme. 'logspaced': layers increase in thickness logarithmically from top to bottom — recommended for most AEM surveys. 'geometric': each layer is a fixed ratio thicker than the one above (set ratio with 'thicknesses_geometric_factor'). 'time': layer boundaries are scaled to gate times (good for data-adaptive depth discretization)."
