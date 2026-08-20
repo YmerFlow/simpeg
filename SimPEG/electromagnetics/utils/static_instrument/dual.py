@@ -74,7 +74,10 @@ def _declared_rx_orientation(gex):
     that case rather than this one resolving it.
     """
     orientations = set()
-    for channel in (1, 2):
+    declared = _channel_indices(gex)
+    if not declared:
+        return None
+    for channel in declared:
         value = _channel_field(gex, channel, "ReceiverPolarizationXYZ")
         if value is None:
             return None
@@ -198,8 +201,10 @@ class DualMomentTEMXYZSystem(base.XYZSystem):
         """
         indices = _channel_indices(self.gex)
         if not indices:
-            warnings.warn("GEX declares no Channel blocks; assuming channels 1 and 2.")
-            return (1, 2)
+            raise ValueError(
+                "GEX declares no Channel blocks, so there is no system description "
+                "to resolve moments from. Assuming channels 1 and 2 here would "
+                "invent an instrument.")
 
         # Only channels measuring what is being modelled are candidates. On a
         # multi-component instrument this is what separates "the other moment"
@@ -211,20 +216,38 @@ class DualMomentTEMXYZSystem(base.XYZSystem):
             if declared is None or str(declared).strip().lower() == wanted:
                 candidates.append(index)
         if not candidates:
-            warnings.warn(
-                "No channel declares a %r receiver; considering all %d channels."
-                % (wanted, len(indices)))
-            candidates = indices
+            raise ValueError(
+                "No channel declares a %r receiver; the GEX declares %s. Widening "
+                "to every channel would resolve the pair on a different component "
+                "and return it under the requested one — data measured along one "
+                "axis, labelled as another. That is not a fallback, it is a wrong "
+                "answer that inverts successfully."
+                % (wanted, ", ".join(
+                    "%d=%r" % (i, str(_channel_field(
+                        self.gex, i, "ReceiverPolarizationXYZ")).strip().lower())
+                    for i in indices)))
 
         moments = {i: _channel_field(self.gex, i, "ApproxDipoleMoment")
                    for i in candidates}
         known = {i: m for i, m in moments.items() if m is not None}
 
         if len(known) < 2:
-            warnings.warn(
+            if len(candidates) == 2:
+                # Ordering is unavailable, but the pair is not in doubt: these are
+                # the only two channels measuring what is being modelled. Index
+                # order stands in for moment order, which is the convention the
+                # file itself implies by numbering them.
+                warnings.warn(
+                    "GEX does not declare ApproxDipoleMoment for at least two %r "
+                    "channels; ordering channels %d and %d by index instead."
+                    % (wanted, candidates[0], candidates[1]))
+                return (candidates[0], candidates[1])
+            raise ValueError(
                 "GEX does not declare ApproxDipoleMoment for at least two %r "
-                "channels; falling back to channels 1 and 2." % wanted)
-            return (1, 2)
+                "channels, and there are %d candidates rather than 2, so the "
+                "moment pair cannot be resolved. Falling back to channels 1 and 2 "
+                "would guess at an instrument the file does not describe."
+                % (wanted, len(candidates)))
 
         ordered = sorted(known, key=lambda i: known[i])
         return (ordered[0], ordered[-1])

@@ -194,16 +194,29 @@ def test_falls_back_to_1_2_with_a_warning_when_fields_absent():
         assert Resolver(gex).moment_channels == (1, 2)
 
 
-def test_falls_back_when_no_channels_declared():
-    with pytest.warns(UserWarning, match="no Channel blocks"):
-        assert Resolver(FakeGEX({"General": {}})).moment_channels == (1, 2)
+def test_raises_when_no_channels_declared():
+    """Was: warned and returned (1, 2).
+
+    A GEX with no Channel blocks describes no instrument, so there is nothing
+    to resolve. Returning a pair invents one.
+    """
+    with pytest.raises(ValueError, match="no Channel blocks"):
+        Resolver(FakeGEX({"General": {}})).moment_channels
 
 
-def test_warns_when_no_channel_matches_the_orientation():
-    """Considers everything rather than resolving to nothing."""
+def test_raises_when_no_channel_matches_the_orientation():
+    """Was: considered every channel rather than resolving to nothing.
+
+    That returned the pair measured on a *different* component under the
+    requested one. Here both channels measure X and Z is asked for; the old
+    behavior returned the two X channels as the Z moment pair. It inverts, and
+    the model is wrong in a way nothing downstream can detect.
+
+    Refusing is the only answer that does not silently mislabel an axis.
+    """
     gex = FakeGEX(make_gex([("LM", "X", 2736.0), ("HM", "X", 451440.0)]))
-    with pytest.warns(UserWarning, match="receiver"):
-        assert Resolver(gex, rx_orientation="z").moment_channels == (1, 2)
+    with pytest.raises(ValueError, match="receiver"):
+        Resolver(gex, rx_orientation="z").moment_channels
 
 
 # ── Reading the in-use flags ─────────────────────────────────────────────────
