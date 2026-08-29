@@ -30,6 +30,7 @@ from SimPEG.electromagnetics.utils.em1d_utils import get_2d_mesh,plot_layer, get
 from SimPEG.regularization import LaterallyConstrained, RegularizationMesh
 
 from .thickness import build_log_spaced_layer_thick
+from .utils import detect_cpu_availability
 
 import warnings
 
@@ -261,27 +262,30 @@ class XYZSystem(object):
     "Linear solver backend for the forward simulation. 'LU' uses scipy sparse LU decomposition (default, no extra dependencies). 'pardiso' uses Intel MKL Pardiso via pymatsolver — significantly faster for large problems but requires compatible hardware and the pymatsolver package."
     simulation__parallel = True
     "Run forward simulations for each sounding in parallel. Strongly recommended for production runs. Set to False only for single-threaded debugging in a notebook."
-    simulation__n_cpu = 3
-    "Number of CPU threads for parallel simulation. Set to the number of available cores on the machine (minus 1–2 for OS headroom). Increasing beyond the number of physical cores gives diminishing returns."
+    simulation__n_cpu = 0
+    "Number of CPU threads for parallel simulation. Default 0 means auto-detect from the pod's CPU limit (CPU_LIMIT env var, then cgroup CFS quota, then node core count); None is treated the same way. A positive value pins that many worker processes verbatim (explicit override always wins). Increasing beyond the number of physical cores gives diminishing returns."
     def make_simulation(self, survey, thicknesses):
+        n_cpu = self.simulation__n_cpu
+        if n_cpu is None or n_cpu == 0:
+            n_cpu = detect_cpu_availability()
         if 'pardiso' in self.simulation__solver.lower():
             print('Using Pardiso solver')
             return tdem.Simulation1DLayeredStitched(
                 survey=survey,
                 thicknesses=thicknesses,
-                sigmaMap=maps.ExpMap(nP=self.n_param(thicknesses)), 
+                sigmaMap=maps.ExpMap(nP=self.n_param(thicknesses)),
                 solver=PardisoSolver,
                 parallel=self.simulation__parallel,
-                n_cpu=self.simulation__n_cpu,
+                n_cpu=n_cpu,
                 n_layer=self.n_layer_used)
         else:
             print('Using default (spLU) solver')
             return tdem.Simulation1DLayeredStitched(
                 survey=survey,
                 thicknesses=thicknesses,
-                sigmaMap=maps.ExpMap(nP=self.n_param(thicknesses)), 
+                sigmaMap=maps.ExpMap(nP=self.n_param(thicknesses)),
                 parallel=self.simulation__parallel,
-                n_cpu=self.simulation__n_cpu,
+                n_cpu=n_cpu,
                 n_layer=self.n_layer_used)
 
     
