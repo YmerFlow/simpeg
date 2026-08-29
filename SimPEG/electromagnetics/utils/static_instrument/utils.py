@@ -33,6 +33,49 @@ from SimPEG.regularization import LaterallyConstrained, RegularizationMesh
 import scipy.stats
 
 
+def detect_cpu_availability():
+    """Return the number of CPUs this process may actually use, as an int >= 1.
+
+    Precedence: CPU_LIMIT env var (decimal cores, e.g. "3.5") -> cgroup CFS quota
+    (v2 cpu.max, then v1 cfs_quota_us/cfs_period_us) -> os.cpu_count(). Fractional
+    core counts are floored; the result is clamped to a minimum of 1 so Pool() never
+    raises. Set by the Kubernetes job launcher (limits == requests) so parallel
+    forward simulations size their process pool to the pod's real quota, not the
+    whole node's core count.
+    """
+    # 1. Explicit env var from the pod launcher (authoritative).
+    #    Absent OR empty/whitespace-only -> fall through (not an error).
+    raw = os.environ.get("CPU_LIMIT")
+    if raw and raw.strip():
+        cores = float(raw)          # non-empty but non-numeric should surface, not be swallowed
+        if cores >= 1:
+            return int(cores)       # floor; >=1 guaranteed
+        return 1
+
+    # 2. cgroup CFS quota
+    #    v2: /sys/fs/cgroup/cpu.max  -> "<quota> <period>" or "max <period>"
+    try:
+        with open("/sys/fs/cgroup/cpu.max") as f:
+            quota, period = f.read().split()
+        if quota != "max":
+            cores = int(quota) / int(period)
+            return max(1, int(cores))
+    except FileNotFoundError:
+        #    v1: cpu.cfs_quota_us / cpu.cfs_period_us  (quota == -1 means unlimited)
+        try:
+            with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us") as f:
+                quota = int(f.read())
+            with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us") as f:
+                period = int(f.read())
+            if quota > 0 and period > 0:
+                return max(1, int(quota / period))
+        except FileNotFoundError:
+            pass
+
+    # 3. Fallback: node core count (last resort — over-counts under a CFS quota)
+    return os.cpu_count() or 1
+
+
 def make_2layer(xdist, dtb, layers, res_upper=30, res_lower=300, x=None, y=None):
     """Make a synthetic model with two layers of differing resistivity (in addition to the air above).
     
