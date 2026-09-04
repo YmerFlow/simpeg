@@ -34,7 +34,11 @@ setup(
     version="0.17.0.2",
     packages=find_packages(exclude=["tests*", "examples*", "tutorials*"]),
     install_requires=[
-        "numpy>=1.7",
+        # <2: this fork is SimPEG 0.17 (forked mid-2023); upstream only gained numpy 2
+        # support in 0.22. With every removed alias fixed, 22 em1d tests still fail on
+        # numpy 2 with numerical assertion errors (YmerFlow/Ymerflow#75). Lifting this
+        # means rebasing onto a newer upstream or validating the fork on numpy 2.
+        "numpy>=1.7,<2",
         "scipy>=1.0.0",
         "scikit-learn>=0.22",
         "pymatsolver>=0.1.1",
