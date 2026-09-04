@@ -108,16 +108,91 @@ class XYZSystem(object):
     sounding_filter = slice(None, None, None)
 
     @property
+    def moment_channels(self):
+        """The channel numbers this system models, in ``times_full`` order.
+
+        The contract for subclasses: ``moment_channels[i]`` is the instrument
+        channel whose gates ``times_full[i]`` and ``times_filter[i]`` describe.
+        That pairing is what lets :attr:`gate_filter` turn a channel number into
+        a moment index without assuming the two are the same number.
+
+        This base description has a single channel, numbered 1 — the same
+        assumption ``times_full`` makes when it reads ``'gate times for channel
+        1'``. A subclass describing more than one channel, or channels numbered
+        otherwise, must override this; see
+        :attr:`~.dual.DualMomentTEMXYZSystem.moment_channels`, which resolves
+        the pair from the instrument description rather than declaring it.
+        """
+        return (1,)
+
+    #: Matches the channel number in a ``layer_data`` array name.
+    #:
+    #: Anchored on the ``ch`` token deliberately. Taking the first run of digits
+    #: instead reads ``01`` out of a name like ``HM_X_G01`` and calls it channel
+    #: 1, which is how an array belonging to no channel at all used to be handed
+    #: another channel's gate filter.
+    _channel_pattern = re.compile(r"ch(\d+)", re.IGNORECASE)
+
+    @classmethod
+    def layer_data_channel(cls, key):
+        """The channel a ``layer_data`` array name declares, or None for none.
+
+        Covers both namings in circulation for the same array — ``dbdt_ch1gt``
+        and ``Gate_Ch01`` — since which one reaches here depends on the naming
+        standard the file was normalized to. Override alongside
+        :attr:`moment_channels` for an instrument naming its arrays some third
+        way.
+        """
+        match = cls._channel_pattern.search(key)
+        return None if match is None else int(match.group(1))
+
+    @property
     def gate_filter(self):
-        times = self.times_filter
+        """Per-array gate masks, keyed by ``layer_data`` array name.
+
+        Built from the channels this system declares. An array is filtered only
+        where its name names a channel in :attr:`moment_channels`; the mask it
+        gets is the one for that channel's *moment*, found by position in the
+        pair rather than by subtracting one from the channel number. Those
+        coincide only on an instrument numbering its moments 1 and 2, and
+        assuming it raised ``IndexError`` on anything else.
+
+        Arrays left out are not dropped. ``FilteredXYZ`` reads this dict with
+        ``.get(key, None)`` and falls back to a full slice, so an absent key
+        means "all gates kept" — the array still passes through the sounding
+        filter and out the other side, simply un-narrowed. That is the only
+        defensible default: applying one channel's gate mask to an array of
+        another channel's width is what produced the shape errors this replaces.
+
+        A name carrying a channel number outside the declared set is reported,
+        because that is unambiguously measured data the inversion is about to
+        ignore. A name carrying no channel number at all is passed over in
+        silence: at this level ``resistivity``, ``dep_top`` and ``dep_bot`` are
+        indistinguishable from an auxiliary component the GEX omits, and warning
+        about all of them would fire on every dataset and teach the operator to
+        ignore the warning that matters.
+        """
+        moment_of_channel = {channel: moment
+                             for moment, channel in enumerate(self.moment_channels)}
         filt = {}
+        undeclared = []
         for key in self._xyz.layer_data.keys():
-            match = re.match(r"^[^0-9]*([0-9]+).*", key)
-            if match is None: continue
-            channel = int(match.groups()[0]) - 1
-            filt[key] = self.times_filter[channel]
+            channel = self.layer_data_channel(key)
+            if channel is None:
+                continue
+            if channel not in moment_of_channel:
+                undeclared.append(key)
+                continue
+            filt[key] = self.times_filter[moment_of_channel[channel]]
+        if undeclared:
+            warnings.warn(
+                "Layer data %s belongs to channels this system does not model "
+                "(modeling channel(s) %s). Those arrays are carried through "
+                "unfiltered and take no part in the inversion."
+                % (", ".join(sorted(undeclared)),
+                   ", ".join(str(c) for c in self.moment_channels)))
         return filt
-        
+
     @property
     def xyz(self):
         return xyzfilter.FilteredXYZ(self._xyz, self.sounding_filter, self.gate_filter)
@@ -138,7 +213,16 @@ class XYZSystem(object):
 
     @property
     def times_full(self):
-        return [np.array(self.xyz.model_info['gate times for channel 1'])]
+        """Every gate time the instrument records, before any gate filtering.
+
+        Read off the unfiltered dataset. Reading ``self.xyz`` instead closes a
+        loop — the filtered view is built from :attr:`gate_filter`, which needs
+        :attr:`times_filter`, which needs this — so any subclass not overriding
+        this property recursed to death the moment anything touched its data.
+        The two are interchangeable in every other respect: filtering narrows
+        ``layer_data`` and ``flightlines``, and leaves ``model_info`` alone.
+        """
+        return [np.array(self._xyz.model_info['gate times for channel 1'])]
 
     @property
     def times_filter(self):
