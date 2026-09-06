@@ -557,10 +557,26 @@ class XYZSystem(object):
     def make_forward(self):
         return self.make_simulation(self.make_survey(), self.make_thicknesses())
         
+    #: Per-sounding misfit columns an inversion writes, and that an input file may
+    #: already carry from whatever produced it (Aarhus Workbench writes all three).
+    #: An input's values are renamed ``input_<name>`` on the way through, so a
+    #: model never shows someone else's fit under the name of its own.
+    MISFIT_COLUMNS = ("resdata", "restotal", "numdata")
+
+    def _flightlines_without_input_misfit(self):
+        """A copy of the flightlines with any pre-existing misfit columns renamed.
+
+        A copy, because ``self.xyz.flightlines`` is the input and must not be
+        written to: two outputs built from the same frame would otherwise
+        share - and overwrite - each other's columns.
+        """
+        fl = self.xyz.flightlines.copy()
+        return fl.rename(columns={c: "input_" + c for c in self.MISFIT_COLUMNS if c in fl.columns})
+
     def inverted_model_to_xyz(self, model, thicknesses):
         xyzsparse = libaarhusxyz.XYZ()
         xyzsparse.model_info.update(self.xyz.model_info)
-        xyzsparse.flightlines = self.xyz.flightlines
+        xyzsparse.flightlines = self._flightlines_without_input_misfit()
         xyzsparse.layer_data["resistivity"] = 1 / np.exp(pd.DataFrame(
             model.reshape((len(self.xyz.flightlines),
                            len(model) // len(self.xyz.flightlines)))))
@@ -588,22 +604,35 @@ class XYZSystem(object):
         return self.sparse, self.l2
     
     def make_inversion_outputs(self):
-        last_model = self.inverted_model_to_xyz(self.inv.invProb.model, self.inv.invProb.dmisfit.simulation.thicknesses)
+        thicknesses = self.inv.invProb.dmisfit.simulation.thicknesses
+        last_model = self.inverted_model_to_xyz(self.inv.invProb.model, thicknesses)
         last_pred = self.forward_data_to_xyz(self.inv.invProb.dpred, inversion=True)
+        self._copy_misfit(last_pred, last_model)
 
         self.corrected = self.forward_data_to_xyz(self.inv.invProb.dmisfit.data.dobs, inversion=True)
 
         if hasattr(self.inv.invProb, "l2model"):
             self.sparse = last_model
             self.sparsepred = last_pred
-            self.l2 = self.inverted_model_to_xyz(self.inv.invProb.l2model, self.inv.invProb.dmisfit.simulation.thicknesses)
+            self.l2 = self.inverted_model_to_xyz(self.inv.invProb.l2model, thicknesses)
             self.l2pred = self.forward_data_to_xyz(self.inv.invProb.l2dpred, inversion=True)
+            self._copy_misfit(self.l2pred, self.l2)
 
         else:
             self.sparse = None
             self.sparsepred = None
             self.l2 = last_model
             self.l2pred = last_pred
+
+    def _copy_misfit(self, pred, model):
+        """Put the misfit computed for a predicted-data set onto the model it belongs to.
+
+        The question a model has to answer on its own is "how well did this fit?";
+        making the reader open the synthetic to find out is how comparing two
+        inversions ends up done by hand. Same sounding order, so a straight copy.
+        """
+        for col in self.MISFIT_COLUMNS:
+            model.flightlines[col] = pred.flightlines[col].values
 
     def split_moments(self, resp):
         moments = []
@@ -649,12 +678,12 @@ class XYZSystem(object):
         
         xyzresp = libaarhusxyz.XYZ()
         xyzresp.model_info.update(self.xyz.model_info)
-        xyzresp.flightlines = self.xyz.flightlines
+        xyzresp.flightlines = self._flightlines_without_input_misfit()
         xyzresp.layer_data = {}
 
         if inversion:
             uncertfilt = np.isinf(self.data_uncert_array_culled)
-            
+
             derr = (self.inv.invProb.dmisfit.data.dobs-dpred) * self.inv.invProb.dmisfit.W.diagonal()
             with np.errstate(divide='ignore'):
                 std = np.abs(1 / self.inv.invProb.dmisfit.W.diagonal() / self.inv.invProb.dmisfit.data.dobs)
@@ -665,16 +694,25 @@ class XYZSystem(object):
             dpred = np.where(uncertfilt, np.nan, dpred)
             derr = np.where(uncertfilt, np.nan, derr)
             std = np.where(uncertfilt, np.nan, std)
-            
+
             for idx, moment in enumerate(reshape(derr)):
                 xyzresp.layer_data["dbdt_err_ch%sgt" % (idx + 1)] = moment
 
             for idx, moment in enumerate(reshape(std)):
                 xyzresp.layer_data["dbdt_std_ch%sgt" % (idx + 1)] = moment
 
+            # The misfit, in Aarhus Workbench's three columns so that a model from
+            # here reads like one from there. resdata: RMS of the normalized
+            # residual over the gates a sounding contributed; numdata: how many
+            # that was; restotal: the same RMS over every datum in the inversion,
+            # one number repeated (Workbench's restotal also folds in the model
+            # constraints; ours is data-only, which is what an operator compares).
             derrall = reshape_nosplit(derr)
-            with np.errstate(divide='ignore'):
-                xyzresp.flightlines['resdata'] = np.sqrt(np.nansum(derrall**2, axis=1) / (~np.isnan(derrall)).sum(axis=1))
+            numdata = (~np.isnan(derrall)).sum(axis=1)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                xyzresp.flightlines['resdata'] = np.sqrt(np.nansum(derrall**2, axis=1) / numdata)
+            xyzresp.flightlines['numdata'] = numdata
+            xyzresp.flightlines['restotal'] = float(np.sqrt(np.nanmean(derrall**2)))
             
         dpred = -dpred / self.xyz.model_info.get("scalefactor", 1)
         
