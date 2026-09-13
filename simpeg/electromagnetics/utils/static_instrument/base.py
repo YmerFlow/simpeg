@@ -33,12 +33,13 @@ from .utils import detect_cpu_availability
 
 import warnings
 
+from pymatsolver import SolverLU
 try:
     from pymatsolver import PardisoSolver as Solver
     print("pymatsolver.PardisoSolver available for fwd modelling")
 except:
     print("Could not import PardisoSolver, only default (spLU) available")
-    
+
 import scipy.stats
 import copy
 import re
@@ -282,6 +283,7 @@ class XYZSystem(object):
                 survey=survey,
                 thicknesses=thicknesses,
                 sigmaMap=maps.ExpMap(nP=self.n_param(thicknesses)),
+                solver=SolverLU,
                 parallel=self.simulation__parallel,
                 n_cpu=n_cpu)
 
@@ -385,7 +387,7 @@ class XYZSystem(object):
             alpha_r = self.regularization__alpha_r,
             alpha_z = self.regularization__alpha_z,
         )
-        reg.mref = self.make_startmodel(thicknesses)
+        reg.reference_model = self.make_startmodel(thicknesses)
         return reg
 
     directives__beta__seed : int = 42
@@ -470,6 +472,17 @@ class XYZSystem(object):
 
         return self.xyz.unfilter(xyzsparse, layerfilter=False)
     
+    @property
+    def data_misfit(self):
+        """The data misfit, unwrapped from v022's ComboObjectiveFunction.
+
+        v022's BaseInvProblem always wraps the misfit as
+        ComboObjectiveFunction(objfcts=[misfit]), so simulation/data/W live on
+        objfcts[0] rather than directly on invProb.dmisfit.
+        """
+        dmisfit = self.inv.invProb.dmisfit
+        return dmisfit.objfcts[0] if hasattr(dmisfit, "objfcts") else dmisfit
+
     def invert(self, **kw):
         """Invert the data from the XYZ file using this system description and
         inversion parameters.
@@ -478,22 +491,22 @@ class XYZSystem(object):
         """
 
         self.options.update(kw)
-        
-        self.inv = self.make_inversion()        
-        self.inv.run(self.make_startmodel(self.inv.invProb.dmisfit.simulation.thicknesses))
+
+        self.inv = self.make_inversion()
+        self.inv.run(self.make_startmodel(self.data_misfit.simulation.thicknesses))
         self.make_inversion_outputs()
         return self.sparse, self.l2
-    
+
     def make_inversion_outputs(self):
-        last_model = self.inverted_model_to_xyz(self.inv.invProb.model, self.inv.invProb.dmisfit.simulation.thicknesses)
+        last_model = self.inverted_model_to_xyz(self.inv.invProb.model, self.data_misfit.simulation.thicknesses)
         last_pred = self.forward_data_to_xyz(self.inv.invProb.dpred, inversion=True)
 
-        self.corrected = self.forward_data_to_xyz(self.inv.invProb.dmisfit.data.dobs, inversion=True)
+        self.corrected = self.forward_data_to_xyz(self.data_misfit.data.dobs, inversion=True)
 
         if hasattr(self.inv.invProb, "l2model"):
             self.sparse = last_model
             self.sparsepred = last_pred
-            self.l2 = self.inverted_model_to_xyz(self.inv.invProb.l2model, self.inv.invProb.dmisfit.simulation.thicknesses)
+            self.l2 = self.inverted_model_to_xyz(self.inv.invProb.l2model, self.data_misfit.simulation.thicknesses)
             self.l2pred = self.forward_data_to_xyz(self.inv.invProb.l2dpred, inversion=True)
 
         else:
@@ -552,9 +565,9 @@ class XYZSystem(object):
         if inversion:
             uncertfilt = np.isinf(self.data_uncert_array_culled)
             
-            derr = (self.inv.invProb.dmisfit.data.dobs-dpred) * self.inv.invProb.dmisfit.W.diagonal()
+            derr = (self.data_misfit.data.dobs-dpred) * self.data_misfit.W.diagonal()
             with np.errstate(divide='ignore'):
-                std = np.abs(1 / self.inv.invProb.dmisfit.W.diagonal() / self.inv.invProb.dmisfit.data.dobs)
+                std = np.abs(1 / self.data_misfit.W.diagonal() / self.data_misfit.data.dobs)
 
             # dpred, dobs etc contain dummy values where uncertainty
             # is inf. Don't let them through to the file or it will
