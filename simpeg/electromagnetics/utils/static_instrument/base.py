@@ -138,7 +138,13 @@ class XYZSystem(object):
 
     @property
     def times_full(self):
-        return [np.array(self.xyz.model_info['gate times for channel 1'])]
+        # Read the full (unfiltered) gate times from the raw data (self._xyz),
+        # not the filtered view (self.xyz). self.xyz builds a FilteredXYZ whose
+        # gate_filter derives from times_filter -> times_full; going through
+        # self.xyz here would recurse (gate_filter -> times_filter -> times_full
+        # -> xyz -> gate_filter). The "full" times are by definition the raw,
+        # pre-filter ones anyway.
+        return [np.array(self._xyz.model_info['gate times for channel 1'])]
 
     @property
     def times_filter(self):
