@@ -160,6 +160,11 @@ from .base import (
 from .regularization_mesh import RegularizationMesh
 from .regularization_mesh_lateral import LCRegularizationMesh
 from .sparse import BaseSparse, SparseSmallness, SparseSmoothness, Sparse
+from .laterally_constrained import (
+    LaterallyConstrained,
+    LaterallyConstrainedSmallness,
+    LaterallyConstrainedSmoothness,
+)
 from .pgi import PGIsmallness, PGI
 from .cross_gradient import CrossGradient
 from .correspondence import LinearCorrespondence
