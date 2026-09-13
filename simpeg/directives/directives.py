@@ -2237,6 +2237,10 @@ class Update_IRLS(InversionDirective):
 
         # Save l2-model
         self.invProb.l2model = self.invProb.model.copy()
+        # Save the L2 predicted data alongside the L2 model so the smooth
+        # (L2) result can be extracted after the IRLS transition. Required by
+        # static_instrument's smooth+sharp dual-output inversion.
+        self.invProb.l2dpred = self.invProb.dpred.copy()
 
         # Print to screen
         for reg in self.reg.objfcts:

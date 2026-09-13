@@ -112,8 +112,8 @@ class Simulation1DLayered(BaseEM1DSimulation):
         # Code you want to profile
         survey = self.survey
 
-        t_min = np.infty
-        t_max = -np.infty
+        t_min = np.inf
+        t_max = -np.inf
         x, w = roots_legendre(251)
         # loop through source and receiver lists to find the minimum and maximum
         # evaluation times for the step response
