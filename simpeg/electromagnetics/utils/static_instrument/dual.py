@@ -5,7 +5,6 @@ from discretize import TensorMesh
 
 from SimPEG import maps
 from SimPEG.electromagnetics import time_domain as tdem
-from SimPEG.electromagnetics.utils.em1d_utils import plot_layer
 import libaarhusxyz
 import pandas as pd
 
@@ -26,8 +25,8 @@ from SimPEG import (
 from SimPEG.utils import mkvc
 import SimPEG.electromagnetics.time_domain as tdem
 import SimPEG.electromagnetics.utils.em1d_utils
-from SimPEG.electromagnetics.utils.em1d_utils import get_2d_mesh,plot_layer, get_vertical_discretization_time
-from SimPEG.regularization import LaterallyConstrained, RegularizationMesh
+from SimPEG.electromagnetics.utils.em1d_utils import get_vertical_discretization_time
+from SimPEG.regularization import LaterallyConstrained
 
 import scipy.stats
 from . import base

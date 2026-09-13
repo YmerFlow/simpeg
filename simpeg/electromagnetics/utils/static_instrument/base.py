@@ -5,7 +5,6 @@ from discretize import TensorMesh
 
 from SimPEG import maps
 from SimPEG.electromagnetics import time_domain as tdem
-from SimPEG.electromagnetics.utils.em1d_utils import plot_layer
 import libaarhusxyz
 import pandas as pd
 
@@ -26,8 +25,8 @@ from SimPEG import (
 from SimPEG.utils import mkvc
 import SimPEG.electromagnetics.time_domain as tdem
 import SimPEG.electromagnetics.utils.em1d_utils
-from SimPEG.electromagnetics.utils.em1d_utils import get_2d_mesh,plot_layer, get_vertical_discretization_time
-from SimPEG.regularization import LaterallyConstrained, RegularizationMesh
+from SimPEG.electromagnetics.utils.em1d_utils import get_vertical_discretization_time
+from SimPEG.regularization import LaterallyConstrained
 
 from .thickness import build_log_spaced_layer_thick
 from .utils import detect_cpu_availability
@@ -276,8 +275,7 @@ class XYZSystem(object):
                 sigmaMap=maps.ExpMap(nP=self.n_param(thicknesses)),
                 solver=PardisoSolver,
                 parallel=self.simulation__parallel,
-                n_cpu=n_cpu,
-                n_layer=self.n_layer_used)
+                n_cpu=n_cpu)
         else:
             print('Using default (spLU) solver')
             return tdem.Simulation1DLayeredStitched(
@@ -285,10 +283,9 @@ class XYZSystem(object):
                 thicknesses=thicknesses,
                 sigmaMap=maps.ExpMap(nP=self.n_param(thicknesses)),
                 parallel=self.simulation__parallel,
-                n_cpu=n_cpu,
-                n_layer=self.n_layer_used)
+                n_cpu=n_cpu)
 
-    
+
     def make_data(self, survey):
         return data.Data(
             survey,
@@ -370,42 +367,26 @@ class XYZSystem(object):
     """
 
     def make_regularization(self, thicknesses):
-        if False:
-            assert False, "LCI is currently broken"
-            hz = np.r_[thicknesses, thicknesses[-1]]
-            reg = LaterallyConstrained(
-                get_2d_mesh(len(self.xyz.flightlines), hz),
-                mapping=maps.IdentityMap(nP=self.n_param(thicknesses)),
-                alpha_s = self.regularization__alpha_s,
-                alpha_r = self.regularization__alpha_r,
-                alpha_z = self.regularization__alpha_z)
-            # reg.get_grad_horizontal(self.xyz.flightlines[["x", "y"]], hz, dim=2, use_cell_weights=True)
-            # ps, px, py = 0, 0, 0
-            # reg.norms = np.c_[ps, px, py, 0]
-            reg.mref = self.make_startmodel(thicknesses)
-            # reg.mrefInSmooth = False
-            return reg
-        else:
-            coords = self.xyz.flightlines[[self.xyz.x_column, self.xyz.y_column]].astype(float).values
-            if np.sum(np.abs(np.diff(coords[:,1]))) == 0:
-                print('y-coordinate seems to be constant (synthetic data?), adding a small random number')
-                coords[:,1] += np.random.randn(len(coords)) * 1e-6
-            tri = Delaunay(coords)
-            hz = np.r_[thicknesses, thicknesses[-1]]
+        coords = self.xyz.flightlines[[self.xyz.x_column, self.xyz.y_column]].astype(float).values
+        if np.sum(np.abs(np.diff(coords[:,1]))) == 0:
+            print('y-coordinate seems to be constant (synthetic data?), adding a small random number')
+            coords[:,1] += np.random.randn(len(coords)) * 1e-6
+        tri = Delaunay(coords)
+        hz = np.r_[thicknesses, thicknesses[-1]]
 
-            mesh_radial = SimplexMesh(tri.points, tri.simplices)
-            mesh_vertical = SimPEG.electromagnetics.utils.em1d_utils.set_mesh_1d(hz)
-            mesh_reg = [mesh_radial, mesh_vertical]
-            n_param = int(mesh_radial.n_nodes * mesh_vertical.nC)
-            reg_map = SimPEG.maps.IdentityMap(nP=n_param)    # Mapping between the model and regularization
-            reg = SimPEG.regularization.LaterallyConstrained(
-                mesh_reg, mapping=reg_map,
-                alpha_s = self.regularization__alpha_s,
-                alpha_r = self.regularization__alpha_r,
-                alpha_z = self.regularization__alpha_z,
-            )
-            reg.mref = self.make_startmodel(thicknesses)
-            return reg
+        mesh_radial = SimplexMesh(tri.points, tri.simplices)
+        mesh_vertical = SimPEG.electromagnetics.utils.em1d_utils.set_mesh_1d(hz)
+        mesh_reg = [mesh_radial, mesh_vertical]
+        n_param = int(mesh_radial.n_nodes * mesh_vertical.nC)
+        reg_map = SimPEG.maps.IdentityMap(nP=n_param)    # Mapping between the model and regularization
+        reg = SimPEG.regularization.LaterallyConstrained(
+            mesh_reg, mapping=reg_map,
+            alpha_s = self.regularization__alpha_s,
+            alpha_r = self.regularization__alpha_r,
+            alpha_z = self.regularization__alpha_z,
+        )
+        reg.mref = self.make_startmodel(thicknesses)
+        return reg
 
     directives__beta__seed : int = 42
     "Random seed for the beta estimator. Fixed value ensures reproducible results across runs with identical parameters. Change to any integer for a different (but still reproducible) initialization, or clear to use a random seed each run."
