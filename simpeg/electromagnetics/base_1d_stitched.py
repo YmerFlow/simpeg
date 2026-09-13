@@ -154,7 +154,11 @@ class BaseStitchedEM1DSimulation(BaseSimulation):
 
     @topo.setter
     def topo(self, value):
-        self._topo = validate_ndarray_with_shape("topo", value, shape=("*", 3))
+        if value is None:
+            # Deferred: __init__ calls set_null_topography() when topo is None.
+            self._topo = None
+        else:
+            self._topo = validate_ndarray_with_shape("topo", value, shape=("*", 3))
 
     @property
     def parallel(self):
