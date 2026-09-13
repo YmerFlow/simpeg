@@ -3,8 +3,8 @@ import os
 from matplotlib import pyplot as plt
 from discretize import TensorMesh
 
-from SimPEG import maps
-from SimPEG.electromagnetics import time_domain as tdem
+from simpeg import maps
+from simpeg.electromagnetics import time_domain as tdem
 import libaarhusxyz
 import pandas as pd
 
@@ -16,17 +16,17 @@ from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm
 from discretize import TensorMesh, SimplexMesh
 
-from SimPEG.utils import mkvc
-from SimPEG import (
+from simpeg.utils import mkvc
+from simpeg import (
     maps, data, data_misfit, inverse_problem, regularization, optimization,
     directives, inversion, utils
     )
 
-from SimPEG.utils import mkvc
-import SimPEG.electromagnetics.time_domain as tdem
-import SimPEG.electromagnetics.utils.em1d_utils
-from SimPEG.electromagnetics.utils.em1d_utils import get_vertical_discretization_time
-from SimPEG.regularization import LaterallyConstrained
+from simpeg.utils import mkvc
+import simpeg.electromagnetics.time_domain as tdem
+import simpeg.electromagnetics.utils.em1d_utils
+from simpeg.electromagnetics.utils.em1d_utils import get_vertical_discretization_time
+from simpeg.regularization import LaterallyConstrained
 
 from .thickness import build_log_spaced_layer_thick
 from .utils import detect_cpu_availability
@@ -123,8 +123,8 @@ class XYZSystem(object):
     
     def make_system(self, idx, location, times):
         """This method should return a list of instances of some
-        SimPEG.survey.BaseSrc subclass, such as
-        SimPEG.electromagnetics.time_domain.sources.MagDipole.
+        simpeg.survey.BaseSrc subclass, such as
+        simpeg.electromagnetics.time_domain.sources.MagDipole.
 
         idx is an index into self.xyz.flightlines
         location is a tuple (x, y, z) corresponding to the coordinates
@@ -225,12 +225,12 @@ class XYZSystem(object):
             # print(thk)
             return thk
         elif self.startmodel__thicknesses_type == "geometric":
-            return SimPEG.electromagnetics.utils.em1d_utils.get_vertical_discretization(self.n_layer_used - 1,
+            return simpeg.electromagnetics.utils.em1d_utils.get_vertical_discretization(self.n_layer_used - 1,
                                                                                         self.startmodel__thicknesses_minimum_dz,
                                                                                         self.startmodel__thicknesses_geomtric_factor)
         elif self.startmodel__thicknesses_type == "time":
             # FIX ME: if model is given it should use the resistivities in the model, not self.startmodel__res
-            return SimPEG.electromagnetics.utils.em1d_utils.get_vertical_discretization_time(
+            return simpeg.electromagnetics.utils.em1d_utils.get_vertical_discretization_time(
                 np.sort(np.concatenate(self.times)),
                 sigma_background=1./self.startmodel__res,
                 n_layer=self.n_layer_used-1
@@ -375,11 +375,11 @@ class XYZSystem(object):
         hz = np.r_[thicknesses, thicknesses[-1]]
 
         mesh_radial = SimplexMesh(tri.points, tri.simplices)
-        mesh_vertical = SimPEG.electromagnetics.utils.em1d_utils.set_mesh_1d(hz)
+        mesh_vertical = simpeg.electromagnetics.utils.em1d_utils.set_mesh_1d(hz)
         mesh_reg = [mesh_radial, mesh_vertical]
         n_param = int(mesh_radial.n_nodes * mesh_vertical.nC)
-        reg_map = SimPEG.maps.IdentityMap(nP=n_param)    # Mapping between the model and regularization
-        reg = SimPEG.regularization.LaterallyConstrained(
+        reg_map = simpeg.maps.IdentityMap(nP=n_param)    # Mapping between the model and regularization
+        reg = simpeg.regularization.LaterallyConstrained(
             mesh_reg, mapping=reg_map,
             alpha_s = self.regularization__alpha_s,
             alpha_r = self.regularization__alpha_r,
@@ -417,9 +417,9 @@ class XYZSystem(object):
             BetaEstimate = directives.BetaEstimate_ByEig(beta0_ratio=self.directives__beta__beta0_ratio)
         dirs = [
             BetaEstimate,
-            SimPEG.directives.BetaSchedule(coolingFactor=self.directives__beta__cooling_factor, 
+            simpeg.directives.BetaSchedule(coolingFactor=self.directives__beta__cooling_factor, 
                                            coolingRate=self.directives__beta__cooling_rate),
-            SimPEG.directives.TargetMisfit()]
+            simpeg.directives.TargetMisfit()]
 
         #            directives.SaveOutputEveryIteration(save_txt=False),
         if self.directives__irls__enable:

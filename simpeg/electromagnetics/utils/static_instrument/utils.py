@@ -3,8 +3,8 @@ import os
 from matplotlib import pyplot as plt
 from discretize import TensorMesh
 
-from SimPEG import maps
-from SimPEG.electromagnetics import time_domain as tdem
+from simpeg import maps
+from simpeg.electromagnetics import time_domain as tdem
 import libaarhusxyz
 import pandas as pd
 
@@ -17,17 +17,17 @@ from matplotlib.colors import LogNorm
 from discretize import TensorMesh, SimplexMesh
 #from pymatsolver import PardisoSolver
 
-from SimPEG.utils import mkvc
-from SimPEG import (
+from simpeg.utils import mkvc
+from simpeg import (
     maps, data, data_misfit, inverse_problem, regularization, optimization,
     directives, inversion, utils
     )
 
-from SimPEG.utils import mkvc
-import SimPEG.electromagnetics.time_domain as tdem
-import SimPEG.electromagnetics.utils.em1d_utils
-from SimPEG.electromagnetics.utils.em1d_utils import get_vertical_discretization_time
-from SimPEG.regularization import LaterallyConstrained
+from simpeg.utils import mkvc
+import simpeg.electromagnetics.time_domain as tdem
+import simpeg.electromagnetics.utils.em1d_utils
+from simpeg.electromagnetics.utils.em1d_utils import get_vertical_discretization_time
+from simpeg.regularization import LaterallyConstrained
 
 import scipy.stats
 

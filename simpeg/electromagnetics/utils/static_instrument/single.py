@@ -1,4 +1,4 @@
-import SimPEG.electromagnetics.time_domain as tdem
+import simpeg.electromagnetics.time_domain as tdem
 import numpy as np
 
 from . import base
