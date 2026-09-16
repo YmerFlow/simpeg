@@ -77,7 +77,9 @@ class XYZClusterer:
                  random_seed=None, valid_gate_threshold=0.5):
         self.xyz = xyz
         self.k_range = k_range
-        self.random_seed = random_seed
+        # Falsy (0 / None) means random initialization, matching the
+        # directives__beta__seed convention (base.py make_directives).
+        self.random_seed = random_seed or None
         self.valid_gate_threshold = valid_gate_threshold
         self.cluster_ids_ = None
         self.n_clusters_ = None
@@ -439,8 +441,8 @@ class XYZSystem(object):
     "Set to True to cluster soundings before inversion. K is selected automatically via the Kneedle algorithm (requires the kneed package)."
     clustering__k_range = range(2, 20)
     "K values scanned when selecting the number of clusters automatically."
-    clustering__random_seed = None
-    "Random seed for K-means reproducibility."
+    clustering__random_seed: int = None
+    "Random seed for K-means reproducibility. Set to a fixed integer for reproducible results across runs. Leave blank (None) for random initialization."
     clustering__valid_gate_threshold = 0.5
     "Gates present in fewer than this fraction of soundings are excluded from the feature vector."
 
