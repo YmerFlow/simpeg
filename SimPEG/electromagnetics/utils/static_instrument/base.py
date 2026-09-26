@@ -177,6 +177,75 @@ class XYZClusterer:
         return startmodel
 
 
+class BetaEstimateFromClusterInversion(directives.InversionDirective):
+    """Estimate the main inversion's ``beta0`` from the *converged* cluster
+    (medoid) sub-inversion instead of a full-survey power iteration.
+
+    ``BetaEstimate_ByEig`` runs a power iteration over the whole survey's
+    ``JᵀJ`` — an O(N-soundings) cost paid up front on every run.  For a
+    clustered start model the same number can be recovered at O(K) cost:
+
+    * The stitched 1-D forward's Jacobian is block-diagonal (each sounding's
+      data depend only on that sounding's layers), so ``λ_max(JᵀJ)`` is the
+      *max over per-sounding blocks*.  Evaluated at the cluster start model —
+      where every sounding carries its cluster medoid's converged profile —
+      that max is well approximated by ``λ_max`` over the K medoid blocks at
+      the medoid inversion's converged model.  We therefore take the
+      data-misfit eigenvalue from the finished medoid sub-inversion (the
+      expensive, model-dependent quantity, now O(K)).
+    * The regularization eigenvalue involves no forward modelling, so it is
+      cheap even at O(N); we compute it directly on the *main* inversion's own
+      regularization.  This captures the lateral (``alpha_r``) term exactly
+      rather than folding it into the inflation factor (the medoid inversion
+      runs with ``alpha_r=0``).
+
+    ``eig_inflation`` is a multiplicative correction for the residual gap
+    between the medoid max-over-K and the true whole-survey max (per-sounding
+    geometry differences); default 1.0.  Set ``parent_system`` to the
+    clustering ``XYZSystem`` whose ``_cluster_system`` holds the completed
+    medoid inversion.
+    """
+
+    parent_system = None  #: clustering XYZSystem; ._cluster_system holds the medoid inversion
+    beta0_ratio = 1.0  #: estimated ratio is multiplied by this to obtain beta0
+    eig_inflation = 1.0  #: correction for medoid-max-over-K vs whole-survey-max
+    n_pw_iter = 4  #: power iterations for each eigenvalue estimate
+    seed = None  #: random seed for the initial eigenvector guess (reproducibility)
+
+    def initialize(self):
+        cluster_system = getattr(self.parent_system, "_cluster_system", None)
+        if cluster_system is None or getattr(cluster_system, "inv", None) is None:
+            raise RuntimeError(
+                "BetaEstimateFromClusterInversion requires a completed cluster "
+                "(medoid) inversion, but parent_system._cluster_system is not set. "
+                "This directive must only be used when clustering is enabled.")
+
+        cluster_invprob = cluster_system.inv.invProb
+        m_cluster = cluster_invprob.model  # converged medoid model
+
+        # Data-misfit eigenvalue: max over the K medoid blocks at the medoid
+        # inversion's converged model (O(K); the block-diagonal Jacobian makes
+        # this the whole-survey max at the cluster start model).
+        dm_eigenvalue = utils.eigenvalue_by_power_iteration(
+            cluster_invprob.dmisfit, m_cluster,
+            n_pw_iter=self.n_pw_iter, seed=self.seed)
+
+        # Regularization eigenvalue: from the MAIN inversion's own reg (no
+        # forward modelling, so cheap; captures alpha_r exactly).
+        reg_eigenvalue = utils.eigenvalue_by_power_iteration(
+            self.invProb.reg, self.invProb.model,
+            n_pw_iter=self.n_pw_iter, seed=self.seed)
+
+        self.ratio = dm_eigenvalue / reg_eigenvalue
+        self.beta0 = self.beta0_ratio * self.eig_inflation * self.ratio
+        self.invProb.beta = self.beta0
+
+        print(f"BetaEstimateFromClusterInversion: dm_eig(cluster converged)={dm_eigenvalue:.6g} "
+              f"reg_eig(main)={reg_eigenvalue:.6g} beta_eig={self.ratio:.6g} "
+              f"eig_inflation={self.eig_inflation} beta0_ratio={self.beta0_ratio} "
+              f"-> beta0={self.beta0:.6g}")
+
+
 class XYZSystem(object):
     """This is a base class for system descriptions for moving EM
     acquisition platforms such as AEM (aerial EM), TTEM (towed time
@@ -583,6 +652,10 @@ class XYZSystem(object):
     "Factor by which the regularization weight (beta) is divided at each cooling step. Default 2 halves beta each step. Larger values (4–10) cool faster and may converge in fewer iterations but risk overshooting the data misfit target."
     directives__beta__cooling_rate=1
     "Number of Gauss-Newton outer iterations between each beta cooling step. Default 1 cools every iteration. Increase to 2–3 if the inversion is oscillating or if you want more iterations at each regularization level before reducing it."
+    directives__beta__from_cluster_inversion = True
+    "When clustering is enabled, estimate the main inversion's beta0 from the converged medoid (cluster) sub-inversion instead of a full-survey power iteration (see BetaEstimateFromClusterInversion). Cheap (O(K) rather than O(N-soundings)). Set False to fall back to the standard BetaEstimate_ByEig full-survey estimate (e.g. to A/B-compare the two). No effect when clustering is disabled."
+    directives__beta__eig_inflation : float = 1.0
+    "Multiplicative correction applied to the beta_eig estimated from the medoid sub-inversion (only used when directives__beta__from_cluster_inversion is True). Corrects the residual gap between the medoid max-over-K data-misfit eigenvalue and the true whole-survey max. Default 1.0; calibrate by A/B-comparing against the standard estimate on representative surveys."
     directives__irls__enable = False
     "Enable sparse (IRLS) inversion after the smooth L2 model converges. IRLS produces a model with sharper layer boundaries by iteratively reweighting the regularization. The smooth L2 model is always produced first and saved regardless."
     directives__irls__max_iterations = 30
@@ -596,8 +669,15 @@ class XYZSystem(object):
     directives__irls__coolingRate = 1
     "Number of IRLS iterations between each update of the IRLS reweighting factors. Default 1 updates every iteration."
     def make_directives(self):
-        if self.directives__beta__seed:
-            BetaEstimate = directives.BetaEstimate_ByEig(beta0_ratio=self.directives__beta__beta0_ratio, 
+        if self.clustering__enabled and self.directives__beta__from_cluster_inversion:
+            BetaEstimate = BetaEstimateFromClusterInversion(
+                parent_system=self,
+                beta0_ratio=self.directives__beta__beta0_ratio,
+                eig_inflation=self.directives__beta__eig_inflation,
+                seed=self.directives__beta__seed)
+            print('estimating beta0 from the converged cluster (medoid) inversion')
+        elif self.directives__beta__seed:
+            BetaEstimate = directives.BetaEstimate_ByEig(beta0_ratio=self.directives__beta__beta0_ratio,
                                                          seed=self.directives__beta__seed)
             print('setting manual random seed for repeatabillity')
         else:
