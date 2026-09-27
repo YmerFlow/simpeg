@@ -149,21 +149,43 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
     def make_system(self, idx, location, times):
         # FIXME: Martin says set z to altitude, not z (subtract topo), original code from seogi doesn't work!
         # Note: location[2] is already == altitude
-        rx_coil_position = self.gex.General.get('RxCoilPosition', np.zeros(3))
+        rx_coil_position = np.asarray(self.gex.General.get('RxCoilPosition', np.zeros(3)), dtype=float)
         receiver_location = (location[0] + rx_coil_position[0],
-                             location[1],
+                             location[1] + rx_coil_position[1],
                              location[2] + np.abs(rx_coil_position[2]))
+        horizontal_offset = float(np.hypot(rx_coil_position[0], rx_coil_position[1]))
         waveforms = self.make_waveforms()
         rx_orientations = self.rx_orientations
-        return [
-            tdem.sources.MagDipole(
-                [tdem.receivers.PointMagneticFluxTimeDerivative(
-                    receiver_location, times[moment], rx_orientations[moment])],
-                location=location,
-                waveform=waveforms[moment],
-                orientation=self.tx_orientation,
-                i_sounding=idx)
-            for moment in range(self.n_moments)]
+        dipole_moments = self.dipole_moments
+        area = self.area
+        radius = np.sqrt(area / np.pi)
+        sources = []
+        for moment in range(self.n_moments):
+            receivers = [tdem.receivers.PointMagneticFluxTimeDerivative(
+                receiver_location, times[moment], rx_orientations[moment])]
+            if horizontal_offset < 1.0:
+                # Central-loop geometry — the receiver sits at the loop centre
+                # (e.g. Xcite, RxCoilPosition ~ 0). A point MagDipole source is
+                # singular at zero transmitter–receiver offset (divide-by-zero in
+                # the 1-D kernel), so model the transmitter as a finite
+                # CircularLoop. The effective current reproduces the GEX dipole
+                # moment (turns * current = moment / area).
+                sources.append(tdem.sources.CircularLoop(
+                    location=location,
+                    receiver_list=receivers,
+                    waveform=waveforms[moment],
+                    radius=radius,
+                    current=dipole_moments[moment] / area,
+                    i_sounding=idx))
+            else:
+                # Offset receiver (e.g. SkyTEM) — point magnetic dipole source.
+                sources.append(tdem.sources.MagDipole(
+                    receivers,
+                    location=location,
+                    waveform=waveforms[moment],
+                    orientation=self.tx_orientation,
+                    i_sounding=idx))
+        return sources
 
 
 class DualMomentTEMXYZSystem(MeasuredTEMXYZSystem):
