@@ -653,29 +653,36 @@ class XYZSystem(object):
             return reg
         else:
             coords = self.xyz.flightlines[[self.xyz.x_column, self.xyz.y_column]].astype(float).values
-            # A 2-D Delaunay triangulation is degenerate when the sounding
-            # positions are (near-)collinear — a single straight flight line, or
-            # synthetic data with a constant coordinate — producing zero-area
-            # simplices that SimplexMesh rejects. Detect that via the smallest
-            # singular value of the centred positions and, if collinear, jitter
-            # the positions by roughly the point spacing so the strip
-            # triangulates cleanly. The jitter (typically sub-metre) is
-            # negligible for the lateral constraint, which is dominated by the
-            # along-line spacing.
-            centered = coords - coords.mean(axis=0)
-            singular_values = np.linalg.svd(centered, compute_uv=False)
-            if singular_values[0] == 0 or singular_values[-1] < 1e-3 * singular_values[0]:
-                nn_dist, _ = cKDTree(coords).query(coords, k=2)
-                spacing = np.median(nn_dist[:, 1])
-                if spacing == 0:
-                    spacing = 1.0
-                print('Sounding positions are ~collinear (single straight line or '
-                      'synthetic data); jittering by ~%.3g for the lateral mesh' % spacing)
-                coords = coords + np.random.randn(*coords.shape) * spacing
-            tri = Delaunay(coords)
             hz = np.r_[thicknesses, thicknesses[-1]]
 
-            mesh_radial = SimplexMesh(tri.points, tri.simplices)
+            # Build the 2-D lateral mesh by triangulating the sounding positions.
+            # (Near-)collinear positions — a single straight flight line, or
+            # synthetic data with a constant coordinate — give a degenerate
+            # triangulation (zero-area simplices) that SimplexMesh rejects. Retry
+            # with a growing jitter (starting from the median sounding spacing)
+            # until the triangulation is non-degenerate. Well-spread 2-D surveys
+            # succeed on the first attempt with no perturbation; for a straight
+            # line the jitter only sets up the lateral-constraint topology and is
+            # small relative to the along-line extent.
+            nn_dist, _ = cKDTree(coords).query(coords, k=2)
+            spacing = np.median(nn_dist[:, 1])
+            if not np.isfinite(spacing) or spacing == 0:
+                spacing = 1.0
+            jittered = coords
+            mesh_radial = None
+            for attempt in range(8):
+                try:
+                    tri = Delaunay(jittered)
+                    mesh_radial = SimplexMesh(tri.points, tri.simplices)
+                    break
+                except Exception as err:
+                    scale = spacing * (2 ** attempt)
+                    print("Lateral mesh degenerate (%s); retrying with jitter ~%.3g" % (err, scale))
+                    jittered = coords + np.random.randn(*coords.shape) * scale
+            if mesh_radial is None:
+                raise ValueError(
+                    "Could not build a non-degenerate lateral regularization mesh "
+                    "from the sounding positions")
             mesh_vertical = SimPEG.electromagnetics.utils.em1d_utils.set_mesh_1d(hz)
             mesh_reg = [mesh_radial, mesh_vertical]
             n_param = int(mesh_radial.n_nodes * mesh_vertical.nC)
