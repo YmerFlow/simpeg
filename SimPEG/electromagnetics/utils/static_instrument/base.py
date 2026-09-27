@@ -665,9 +665,35 @@ class XYZSystem(object):
         """
 
         self.options.update(kw)
-        
-        self.inv = self.make_inversion()        
-        self.inv.run(self.make_startmodel(self.inv.invProb.dmisfit.simulation.thicknesses))
+
+        import cProfile, pstats, io, time
+        def _t(label, fn):
+            _t0 = time.time()
+            _r = fn()
+            print(f"##PHASE## {label}: {time.time()-_t0:.2f}s")
+            return _r
+
+        _pr = cProfile.Profile()
+        _pr.enable()
+
+        thicknesses = _t("make_thicknesses", lambda: self.make_thicknesses())
+        misfit = _t("make_misfit (make_survey+make_simulation+make_data)",
+                    lambda: self.make_misfit(thicknesses))
+        reg = _t("make_regularization", lambda: self.make_regularization(thicknesses))
+        opt = _t("make_optimizer", lambda: self.make_optimizer())
+        dirs = _t("make_directives", lambda: self.make_directives())
+        self.inv = inversion.BaseInversion(
+            inverse_problem.BaseInvProblem(misfit, reg, opt), dirs)
+        startmodel = _t("make_startmodel", lambda: self.make_startmodel(thicknesses))
+        _t("inv.run (BetaEstimate + Gauss-Newton iterations)",
+           lambda: self.inv.run(startmodel))
+
+        _pr.disable()
+        for _sk in ("cumulative", "tottime"):
+            _s = io.StringIO()
+            pstats.Stats(_pr, stream=_s).sort_stats(_sk).print_stats(45)
+            print(f"##PROFILE_{_sk.upper()}##\n{_s.getvalue()}")
+
         self.make_inversion_outputs()
         return self.sparse, self.l2
     
