@@ -177,6 +177,81 @@ class XYZClusterer:
         return startmodel
 
 
+class Simulation1DLayeredStitchedFastCoeff(tdem.Simulation1DLayeredStitched):
+    """Stitched 1D TEM simulation that approximates the per-sounding forward
+    coefficients by sampling source height.
+
+    The stitched forward pre-computes, per sounding, the model-independent
+    Hankel/DLF transform coefficients ``(As, frequencies, lambs, unique_lambs,
+    inv_lambs, C0s, C1s, W)`` (see ``base_1d._compute_hankel_coefficients`` and
+    ``simulation_1d._compute_coefficients``).  For a fixed system geometry (offset,
+    waveform, gate times — constant across a survey) the ONLY per-sounding variation
+    is the analytic vertical factor ``exp(-lambd*(z+h))`` that multiplies ``C0s``/
+    ``C1s``; ``As``/``lambs``/``W``/``frequencies`` are identical for every sounding.
+
+    Rather than rebuild all N coefficient sets (the dominant fixed cost of a large
+    inversion — profiled at ~756 s for 5648 soundings), this builds coefficients at
+    ``fast_coeff_n_alt`` sampled source heights spanning [min, max] and linearly
+    interpolates ``C0s``/``C1s`` per sounding.  Approximate, but the interpolated
+    quantity is a smooth analytic exponential, so a modest number of samples keeps
+    the error well below the data noise floor.  Height is varied by shifting the
+    passed topography z (height above topo = src_z - topo_z), so no source objects
+    are mutated.
+    """
+
+    fast_coeff_n_alt = 20  #: number of sampled source heights to build+interpolate
+
+    def get_coefficients(self):
+        import time as _time
+        from SimPEG.electromagnetics.time_domain.simulation_1d import (
+            run_simulation_time_domain,
+        )
+        if self.topo is None:
+            self.set_null_topography()
+        n = self.n_sounding
+        heights = np.array([
+            self.survey.get_sources_by_sounding_number(i)[0].location[2]
+            - self.topo[i, 2]
+            for i in range(n)
+        ])
+        K = int(min(self.fast_coeff_n_alt, n))
+        if K < 2 or np.ptp(heights) == 0:
+            print("##FASTCOEFF## degenerate height range; using exact per-sounding coefficients")
+            return super().get_coefficients()
+
+        samples = np.linspace(heights.min(), heights.max(), K)
+        base_args = list(self.input_args_for_coeff(0))
+        src0_z = self.survey.get_sources_by_sounding_number(0)[0].location[2]
+        topo0 = np.asarray(self.topo[0, :], dtype=float)
+
+        _t0 = _time.time()
+        sample_coeffs = []
+        for hs in samples:
+            args = list(base_args)
+            # height above topo = src0_z - topo_z  ->  set topo_z = src0_z - hs
+            args[1] = np.array([topo0[0], topo0[1], src0_z - hs], dtype=float)
+            sample_coeffs.append(run_simulation_time_domain(tuple(args)))
+        print(f"##FASTCOEFF## built {K} sample-height coefficient sets in "
+              f"{_time.time()-_t0:.2f}s (height {heights.min():.1f}..{heights.max():.1f} m, "
+              f"{n} soundings)")
+
+        As, freqs, lambs, u_lambs, inv_lambs, _c0, _c1, W = sample_coeffs[0]
+        C0_stack = np.stack([c[5] for c in sample_coeffs])
+        C1_stack = np.stack([c[6] for c in sample_coeffs])
+
+        j_idx = np.clip(np.searchsorted(samples, heights), 1, K - 1)
+        coeffs = []
+        for i in range(n):
+            j = j_idx[i]
+            h0, h1 = samples[j - 1], samples[j]
+            w = 0.0 if h1 == h0 else (heights[i] - h0) / (h1 - h0)
+            C0 = (1.0 - w) * C0_stack[j - 1] + w * C0_stack[j]
+            C1 = (1.0 - w) * C1_stack[j - 1] + w * C1_stack[j]
+            coeffs.append((As, freqs, lambs, u_lambs, inv_lambs, C0, C1, W))
+        self._coefficients = coeffs
+        self._coefficients_set = True
+
+
 class XYZSystem(object):
     """This is a base class for system descriptions for moving EM
     acquisition platforms such as AEM (aerial EM), TTEM (towed time
@@ -394,26 +469,36 @@ class XYZSystem(object):
     "Run forward simulations for each sounding in parallel. Strongly recommended for production runs. Set to False only for single-threaded debugging in a notebook."
     simulation__n_cpu = 3
     "Number of CPU threads for parallel simulation. Set to the number of available cores on the machine (minus 1–2 for OS headroom). Increasing beyond the number of physical cores gives diminishing returns."
+    simulation__fast_coefficients = False
+    "Approximate the per-sounding forward coefficients by building them at a few sampled source heights and linearly interpolating (see Simulation1DLayeredStitchedFastCoeff). Replaces the O(n_soundings) coefficient build (the dominant fixed cost of a large inversion) with an O(fast_coefficients_n_alt) build. Approximate; validate that the model is unchanged within noise before using in production."
+    simulation__fast_coefficients_n_alt = 20
+    "Number of sampled source heights (between the survey min and max) used when simulation__fast_coefficients is True. Only used when that flag is set."
     def make_simulation(self, survey, thicknesses):
+        sim_cls = (Simulation1DLayeredStitchedFastCoeff
+                   if self.simulation__fast_coefficients
+                   else tdem.Simulation1DLayeredStitched)
         if 'pardiso' in self.simulation__solver.lower():
             print('Using Pardiso solver')
-            return tdem.Simulation1DLayeredStitched(
+            sim = sim_cls(
                 survey=survey,
                 thicknesses=thicknesses,
-                sigmaMap=maps.ExpMap(nP=self.n_param(thicknesses)), 
+                sigmaMap=maps.ExpMap(nP=self.n_param(thicknesses)),
                 solver=PardisoSolver,
                 parallel=self.simulation__parallel,
                 n_cpu=self.simulation__n_cpu,
                 n_layer=self.n_layer_used)
         else:
             print('Using default (spLU) solver')
-            return tdem.Simulation1DLayeredStitched(
+            sim = sim_cls(
                 survey=survey,
                 thicknesses=thicknesses,
-                sigmaMap=maps.ExpMap(nP=self.n_param(thicknesses)), 
+                sigmaMap=maps.ExpMap(nP=self.n_param(thicknesses)),
                 parallel=self.simulation__parallel,
                 n_cpu=self.simulation__n_cpu,
                 n_layer=self.n_layer_used)
+        if self.simulation__fast_coefficients:
+            sim.fast_coeff_n_alt = self.simulation__fast_coefficients_n_alt
+        return sim
 
     
     def make_data(self, survey):
