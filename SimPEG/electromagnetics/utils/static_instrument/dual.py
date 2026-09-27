@@ -27,11 +27,6 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
     See the help for ``XYZSystem`` for more information on basic usage.
     """
 
-    gate_filter__start = None
-    "First gate to include in the inversion (zero-based, inclusive), applied to every channel. None includes from the first gate. Use to exclude early gates contaminated by transmitter on-time ringing."
-    gate_filter__end = None
-    "Last gate to include in the inversion (zero-based, exclusive), applied to every channel. None includes through the last gate. Use to exclude late gates below the noise floor."
-
     rx_orientation : typing.Literal['x', 'y', 'z'] = 'z'
     "Fallback receiver coil orientation, used only for channels whose GEX section has no ReceiverPolarizationXYZ."
     tx_orientation : typing.Literal['x', 'y', 'z'] = 'z'
@@ -96,16 +91,9 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
         return tuple(np.array(self.gex.gate_times(i + 1)[:, 0])
                      for i in range(self.n_moments))
 
-    @property
-    def times_filter(self):
-        filts = []
-        for times in self.times_full:
-            filt = np.zeros(len(times), dtype=bool)
-            start = 0 if self.gate_filter__start is None else self.gate_filter__start
-            end = len(times) if self.gate_filter__end is None else self.gate_filter__end
-            filt[start:end] = True
-            filts.append(filt)
-        return filts
+    # times_filter defaults to "all gates" (inherited from XYZSystem). Cull gates
+    # per channel through processing (Disable gates ...) or the InUse flags; the
+    # DualMomentTEMXYZSystem subclass below adds the classic LM/HM gate window.
 
     @property
     def correct_tilt_pitch_for1Dinv(self):

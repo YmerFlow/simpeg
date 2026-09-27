@@ -309,8 +309,6 @@ class XYZSystem(object):
         if name in options: return options[name]
         return object.__getattribute__(self, name)
 
-    gex = None
-
     @classmethod
     def load_gex(cls, gex):
         """Accepts a GEX file loaded using libaarhusxyz.GEX() and returns a
