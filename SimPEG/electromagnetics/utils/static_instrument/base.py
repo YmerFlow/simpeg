@@ -309,6 +309,21 @@ class XYZSystem(object):
         if name in options: return options[name]
         return object.__getattribute__(self, name)
 
+    gex = None
+
+    @classmethod
+    def load_gex(cls, gex):
+        """Accepts a GEX file loaded using libaarhusxyz.GEX() and returns a
+        new subclass of this system with the GEX attached, ready to be used
+        for inversion and forward modelling. Systems that describe the
+        instrument entirely in code (e.g. SyntheticTEMXYZSystem) do not use
+        the GEX, but accept and ignore it here so the calling convention is
+        the same for every system."""
+        class GexSystem(cls):
+            pass
+        GexSystem.gex = gex
+        return GexSystem
+
 
     sounding_filter = slice(None, None, None)
 
