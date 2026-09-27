@@ -653,9 +653,25 @@ class XYZSystem(object):
             return reg
         else:
             coords = self.xyz.flightlines[[self.xyz.x_column, self.xyz.y_column]].astype(float).values
-            if np.sum(np.abs(np.diff(coords[:,1]))) == 0:
-                print('y-coordinate seems to be constant (synthetic data?), adding a small random number')
-                coords[:,1] += np.random.randn(len(coords)) * 1e-6
+            # A 2-D Delaunay triangulation is degenerate when the sounding
+            # positions are (near-)collinear — a single straight flight line, or
+            # synthetic data with a constant coordinate — producing zero-area
+            # simplices that SimplexMesh rejects. Detect that via the smallest
+            # singular value of the centred positions and, if collinear, jitter
+            # the positions by roughly the point spacing so the strip
+            # triangulates cleanly. The jitter (typically sub-metre) is
+            # negligible for the lateral constraint, which is dominated by the
+            # along-line spacing.
+            centered = coords - coords.mean(axis=0)
+            singular_values = np.linalg.svd(centered, compute_uv=False)
+            if singular_values[0] == 0 or singular_values[-1] < 1e-3 * singular_values[0]:
+                nn_dist, _ = cKDTree(coords).query(coords, k=2)
+                spacing = np.median(nn_dist[:, 1])
+                if spacing == 0:
+                    spacing = 1.0
+                print('Sounding positions are ~collinear (single straight line or '
+                      'synthetic data); jittering by ~%.3g for the lateral mesh' % spacing)
+                coords = coords + np.random.randn(*coords.shape) * spacing
             tri = Delaunay(coords)
             hz = np.r_[thicknesses, thicknesses[-1]]
 
