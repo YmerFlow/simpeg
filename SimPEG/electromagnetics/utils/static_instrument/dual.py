@@ -156,7 +156,6 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
         horizontal_offset = float(np.hypot(rx_coil_position[0], rx_coil_position[1]))
         waveforms = self.make_waveforms()
         rx_orientations = self.rx_orientations
-        dipole_moments = self.dipole_moments
         area = self.area
         radius = np.sqrt(area / np.pi)
         sources = []
@@ -168,14 +167,16 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
                 # (e.g. Xcite, RxCoilPosition ~ 0). A point MagDipole source is
                 # singular at zero transmitter–receiver offset (divide-by-zero in
                 # the 1-D kernel), so model the transmitter as a finite
-                # CircularLoop. The effective current reproduces the GEX dipole
-                # moment (turns * current = moment / area).
+                # CircularLoop of the correct radius. Like the MagDipole branch
+                # (moment=1), the source carries UNIT dipole moment, because the
+                # data are dB/dt normalised per unit transmitter moment; unit
+                # moment means loop current = 1 / area.
                 sources.append(tdem.sources.CircularLoop(
                     location=location,
                     receiver_list=receivers,
                     waveform=waveforms[moment],
                     radius=radius,
-                    current=dipole_moments[moment] / area,
+                    current=1.0 / area,
                     i_sounding=idx))
             else:
                 # Offset receiver (e.g. SkyTEM) — point magnetic dipole source.
