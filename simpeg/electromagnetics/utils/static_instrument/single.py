@@ -3,15 +3,17 @@ import numpy as np
 
 from . import base
 
-class SingleMomentTEMXYZSystem(base.XYZSystem):
+class SyntheticTEMXYZSystem(base.XYZSystem):
     """A very simple system description, suitable for working with
     synthetic data. It has a single transmitter with a perfect step
-    function shut off, and a single receiver. It requires no setup.
+    function shut off, and a single receiver. It requires no setup and
+    no GEX file — the instrument is described entirely by the class
+    attributes below.
 
     Optionally, a custom waveform can be provided as a Pandas
     DataFrame with columns time and current in the waveform attribute.
     """
-    
+
     area = 340
     i_max = 1
     rx_orientation = 'z'
@@ -29,11 +31,11 @@ class SingleMomentTEMXYZSystem(base.XYZSystem):
     def make_waveforms(self):
         if self.waveform is None:
             return [tdem.sources.StepOffWaveform()]
-        
+
         return [tdem.sources.PiecewiseLinearWaveform(
             self.waveform.time.values,
             self.waveform.current.values)]
-    
+
     def make_system(self, idx, location, times):
         waveforms = self.make_waveforms()
         return [tdem.sources.CircularLoop(
@@ -44,6 +46,10 @@ class SingleMomentTEMXYZSystem(base.XYZSystem):
                     times[0],
                     orientation = self.rx_orientation)],
             waveform = waveforms[0],
-            radius = np.sqrt(self.area/np.pi), 
-            current = self.i_max, 
+            radius = np.sqrt(self.area/np.pi),
+            current = self.i_max,
             i_sounding = idx)]
+
+
+# Backwards-compatible alias: this system used to be the "single moment" system.
+SingleMomentTEMXYZSystem = SyntheticTEMXYZSystem
