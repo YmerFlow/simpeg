@@ -527,25 +527,71 @@ class DualMomentTEMXYZSystem(base.XYZSystem):
         waveform_lm = tdem.sources.PiecewiseLinearWaveform(time_input_currents_lm, input_currents_lm)
         return waveform_lm, waveform_hm
     
+    simulation__receiver_filters: bool = True
+    """Apply the receiver low-pass filters the GEX declares.
+
+    A SkyTEM GEX describes two first-order low-pass filters between the coil
+    and the recorded gate: the coil filter (``General/RxCoilLPFilter1``) and
+    the per-channel board filter (``Channel<n>/TiBLowPassFilter``), each as
+    ``<order> <cutoff Hz>``. They shape the earliest gates strongly - on the
+    304 (210 kHz and 300 kHz) leaving them out puts the forward 20% low at
+    8-13 us and 3% low at 300 us against Workbench's forward of the same
+    model, which an inversion then absorbs as a spurious conductor in the top
+    few metres. On, the gap at those gates drops to 5-9% (YmerFlow/Ymerflow#94).
+    The simulation applies them in the frequency domain
+    (``Simulation1DLayered``, receiver ``lp_*`` properties); this only wires
+    the GEX values through. A GEX that declares no filter gets none. Switch
+    off to reproduce older results."""
+
+    def receiver_filters(self, channel):
+        """The two (order, cutoff Hz) low-pass filters the GEX declares for a channel.
+
+        Returns ``[(order, cutoff), ...]`` with up to two entries, coil filter
+        first; an entry is omitted where the GEX does not declare it. The GEX
+        writes each as ``<order> <cutoff>`` on one line; libaarhusxyz folds the
+        trailing digit of ``RxCoilLPFilter1`` into the key, so it is read as
+        ``RxCoilLPFilter``.
+        """
+        filters = []
+        coil = self.gex.General.get("RxCoilLPFilter")
+        board = _channel_field(self.gex, channel, "TiBLowPassFilter")
+        for spec in (coil, board):
+            if spec is None:
+                continue
+            spec = np.atleast_1d(np.asarray(spec, dtype=float))
+            if spec.size != 2 or spec[1] <= 0:
+                raise ValueError(
+                    "GEX low-pass filter must be '<order> <cutoff Hz>', got %r" % (spec,))
+            filters.append((float(spec[0]), float(spec[1])))
+        return filters
+
+    def make_receiver(self, location, times, channel):
+        rx = tdem.receivers.PointMagneticFluxTimeDerivative(
+            location, times, self.rx_orientation)
+        if self.simulation__receiver_filters:
+            for slot, (order, cutoff) in enumerate(self.receiver_filters(channel), start=1):
+                setattr(rx, "lp_cutoff_frequency_%d" % slot, cutoff)
+                setattr(rx, "lp_power_%d" % slot, order)
+        return rx
+
     def make_system(self, idx, location, times):
         # FIXME: Martin says set z to altitude, not z (subtract topo), original code from seogi doesn't work!
         # Note: location[2] is already == altitude
         receiver_location = (location[0] + self.gex.General['RxCoilPosition'][0],
                              location[1],
                              location[2] + np.abs(self.gex.General['RxCoilPosition'][2]))
-        waveform_lm, waveform_hm = self.make_waveforms()        
+        waveform_lm, waveform_hm = self.make_waveforms()
+        lm, hm = self.moment_channels
 
         return [
             tdem.sources.MagDipole(
-                [tdem.receivers.PointMagneticFluxTimeDerivative(
-                    receiver_location, times[0], self.rx_orientation)],
+                [self.make_receiver(receiver_location, times[0], lm)],
                 location=location,
                 waveform=waveform_lm,
                 orientation=self.tx_orientation,
                 i_sounding=idx),
             tdem.sources.MagDipole(
-                [tdem.receivers.PointMagneticFluxTimeDerivative(
-                    receiver_location, times[1], self.rx_orientation)],
+                [self.make_receiver(receiver_location, times[1], hm)],
                 location=location,
                 waveform=waveform_hm,
                 orientation=self.tx_orientation,
