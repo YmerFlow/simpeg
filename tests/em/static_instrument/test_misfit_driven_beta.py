@@ -78,7 +78,7 @@ def test_stops_when_a_window_of_cooling_bought_almost_no_misfit():
     assert all(h["action"] == "cool" for h in d.history)
     assert inv.invProb.opt.stopNextIteration is True
     assert len(d.history) == 5                                     # window of 4 cools needs 5 misfits; the 6th was never seen
-    assert "cannot be fit" in d.stopped_reason
+    assert "Cooling is not buying misfit" in d.stopped_reason
     assert inv.invProb.beta == pytest.approx(100.0 / 2 ** 5)       # it did keep cooling while it tried
 
 

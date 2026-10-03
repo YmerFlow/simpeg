@@ -44,7 +44,8 @@ class MisfitDrivenBetaSchedule(InversionDirective):
       ``stall_progress`` (a fraction) over the last ``stall_iterations``
       iterations while cooling was being applied, the inversion stops with the
       reason in :attr:`stopped_reason` and in the log: cooling is no longer
-      buying misfit, so the data cannot be fit to the target. A window rather
+      buying misfit, so either the data cannot be fit to the target or the
+      optimizer is step-limited and a lower beta is not the remedy. A window rather
       than a per-iteration count, because slow, steady progress is still
       progress.
 
@@ -144,7 +145,9 @@ class MisfitDrivenBetaSchedule(InversionDirective):
             if window_progress < self.stall_progress:
                 self.stopped_reason = (
                     "the data misfit improved only %.1f%% over the last %d iterations while beta was cooled to %.3g "
-                    "(phi_d=%.4g, target=%.4g); the data cannot be fit to the target at this noise level or discretization"
+                    "(phi_d=%.4g, target=%.4g). Cooling is not buying misfit: either the data cannot be fit to the "
+                    "target at this noise level or discretization, or the optimizer is step-limited (watch the line-search "
+                    "count); a better start model or step damping, not a lower beta, is the remedy"
                     % (100 * window_progress, self.stall_iterations, new_beta, phi_d, target))
                 self.opt.stopNextIteration = True
                 print("MisfitDrivenBetaSchedule stopping: " + self.stopped_reason)
