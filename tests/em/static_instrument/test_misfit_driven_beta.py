@@ -28,9 +28,13 @@ class FakeInversion:
         self.directiveList = SimpleNamespace(dList=[tm])
 
 
-def drive(directive, misfits, beta0=100.0, target=50.0):
-    """Run the directive over a misfit trajectory; returns the fake inversion."""
+# ── Behaviour ────────────────────────────────────────────────────────────────
+# drive() feeds the misfit at the start model as phi_d_last of iteration 1, so
+# the first iteration has a real progress number like every later one.
+
+def drive_from(directive, start_misfit, misfits, beta0=100.0, target=50.0):
     inv = FakeInversion(target, beta0)
+    inv.invProb.phi_d = start_misfit
     directive.inversion = inv
     directive.initialize()
     for i, phi_d in enumerate(misfits, start=1):
@@ -43,55 +47,74 @@ def drive(directive, misfits, beta0=100.0, target=50.0):
     return inv
 
 
-# ── Behaviour ────────────────────────────────────────────────────────────────
-
-def test_cools_faster_far_from_target_and_slower_near_it():
-    d = MisfitDrivenBetaSchedule(cooling_factor=2.0, ratio_cap=4.0, verbose=False)
-    # Far from target (phi_d/target = 8, capped at 4): factor 8. Near target (ratio 1.2): factor 2.4.
-    inv = drive(d, misfits=[400.0, 60.0], beta0=100.0, target=50.0)
-    before, after = [(h["beta_before"], h["beta_after"]) for h in d.history]
-    assert before[0] == 100.0 and after[0] == pytest.approx(100.0 / 8)
-    assert after[1] == pytest.approx(after[0] / (2.0 * 1.2))
+def test_holds_beta_while_the_misfit_is_still_falling():
+    d = MisfitDrivenBetaSchedule(progress_threshold=0.10, verbose=False)
+    inv = drive_from(d, 1000.0, misfits=[600.0, 400.0, 300.0], beta0=100.0, target=50.0)
+    assert [h["action"] for h in d.history] == ["hold", "hold", "hold"]
+    assert inv.invProb.beta == 100.0
 
 
-def test_holds_beta_when_progress_is_below_threshold_and_stops_after_n_stalls():
-    d = MisfitDrivenBetaSchedule(progress_threshold=0.10, stall_iterations=3, verbose=False)
-    # 400 -> 395 -> 392 -> 390: each step improves by <10%, so three holds then stop.
-    inv = drive(d, misfits=[400.0, 395.0, 392.0, 390.0, 388.0], beta0=100.0, target=50.0)
-    actions = [h["action"] for h in d.history]
-    assert actions[0] == "cool"                       # first iteration always cools
-    assert actions[1:4] == ["hold", "hold", "hold"]
+def test_cools_on_a_plateau_harder_far_from_target_than_near_it():
+    d = MisfitDrivenBetaSchedule(cooling_factor=2.0, ratio_cap=4.0, verbose=False)   # ratio scaling switched on
+    # Plateau at 395 (ratio 7.9, capped at 4 -> factor 8), progress, then plateau at 57 (ratio 1.14 -> factor 2.28).
+    inv = drive_from(d, 400.0, misfits=[395.0, 58.0, 57.0], beta0=100.0, target=50.0)
+    acts = [h["action"] for h in d.history]
+    assert acts == ["cool", "hold", "cool"]
+    assert d.history[0]["beta_after"] == pytest.approx(100.0 / 8)
+    assert d.history[2]["beta_after"] == pytest.approx((100.0 / 8) / (2.0 * 57.0 / 50.0))
+    assert inv.invProb.beta == pytest.approx(d.history[2]["beta_after"])
+
+
+def test_a_rising_misfit_counts_as_a_plateau():
+    d = MisfitDrivenBetaSchedule(verbose=False)
+    drive_from(d, 400.0, misfits=[420.0], beta0=100.0, target=50.0)
+    assert d.history[0]["action"] == "cool" and d.history[0]["progress"] < 0
+
+
+def test_stops_when_a_window_of_cooling_bought_almost_no_misfit():
+    d = MisfitDrivenBetaSchedule(progress_threshold=0.10, stall_iterations=4, stall_progress=0.05, verbose=False)
+    # 1% per iteration: each iteration is a plateau (cool), and over the 4-iteration window only ~4% < 5%.
+    inv = drive_from(d, 400.0, misfits=[396.0, 392.0, 388.0, 384.0, 380.0, 376.0], beta0=100.0, target=50.0)
+    assert all(h["action"] == "cool" for h in d.history)
     assert inv.invProb.opt.stopNextIteration is True
-    assert "no progress" in d.stopped_reason
-    assert len(d.history) == 4                        # the run stopped; the 5th misfit was never seen
-    assert inv.invProb.beta == d.history[0]["beta_after"]   # beta untouched during the holds
+    assert len(d.history) == 5                                     # window of 4 cools needs 5 misfits; the 6th was never seen
+    assert "cannot be fit" in d.stopped_reason
+    assert inv.invProb.beta == pytest.approx(100.0 / 2 ** 5)       # it did keep cooling while it tried
 
 
-def test_progress_resets_the_stall_counter():
-    d = MisfitDrivenBetaSchedule(progress_threshold=0.10, stall_iterations=3, verbose=False)
-    inv = drive(d, misfits=[400.0, 395.0, 392.0, 200.0, 198.0, 196.0], beta0=100.0, target=50.0)
-    actions = [h["action"] for h in d.history]
-    assert actions == ["cool", "hold", "hold", "cool", "hold", "hold"]
+def test_slow_but_steady_progress_is_not_a_stall():
+    d = MisfitDrivenBetaSchedule(progress_threshold=0.10, stall_iterations=4, stall_progress=0.05, verbose=False)
+    # 4% per iteration is below the hold threshold (so it cools every time) but ~15% over a 4-iteration window.
+    inv = drive_from(d, 400.0, misfits=[384.0, 369.0, 354.0, 340.0, 326.0, 313.0], beta0=100.0, target=50.0)
+    assert all(h["action"] == "cool" for h in d.history)
     assert inv.invProb.opt.stopNextIteration is False
+    assert len(d.history) == 6
 
 
-def test_floor_is_honoured_and_counts_as_a_stall_once_reached():
+def test_a_hold_restarts_the_stall_window():
+    d = MisfitDrivenBetaSchedule(progress_threshold=0.10, stall_iterations=3, stall_progress=0.05, verbose=False)
+    inv = drive_from(d, 400.0, misfits=[399.0, 398.0, 200.0, 199.0, 198.0, 197.0], beta0=100.0, target=50.0)
+    assert [h["action"] for h in d.history] == ["cool", "cool", "hold", "cool", "cool", "cool"]
+    # window after the hold: 200 -> 197 over 3 cools = 1.5% < 5%  -> stop, but not before
+    assert inv.invProb.opt.stopNextIteration is True and len(d.history) == 6
+
+
+def test_floor_is_honoured_and_a_plateau_on_it_counts_toward_the_stall():
     d = MisfitDrivenBetaSchedule(cooling_factor=10.0, ratio_cap=4.0, beta_min_ratio=1e-3,
-                                 stall_iterations=2, verbose=False)
-    # Huge misfit every iteration: cooling by 40x each time hits the floor (0.1) on the 2nd iteration.
-    inv = drive(d, misfits=[4000.0, 3000.0, 2000.0, 1000.0, 500.0], beta0=100.0, target=50.0)
+                                 stall_iterations=3, stall_progress=0.05, verbose=False)
+    # Every iteration a plateau far above target: factor 40 each time; the floor (0.1) is hit on the 2nd cool.
+    inv = drive_from(d, 4000.0, misfits=[3990.0, 3980.0, 3970.0, 3960.0], beta0=100.0, target=50.0)
     betas = [h["beta_after"] for h in d.history]
     assert betas[0] == pytest.approx(2.5)
-    assert betas[1] == pytest.approx(0.1)             # clamped to the floor, not 2.5/40
+    assert betas[1] == pytest.approx(0.1)                         # clamped, not 2.5/40
+    assert d.history[2]["action"] == "floor"
+    assert inv.invProb.opt.stopNextIteration is True              # 3-iteration window, <5% progress
     assert min(betas) >= 0.1 - 1e-12
-    assert d.history[2]["action"] == "floor" and d.history[3]["action"] == "floor"
-    assert inv.invProb.opt.stopNextIteration is True  # two floor-stalls at stall_iterations=2
-    assert "cannot be fit" in d.stopped_reason
 
 
 def test_does_not_cool_once_target_is_reached():
     d = MisfitDrivenBetaSchedule(verbose=False)
-    inv = drive(d, misfits=[400.0, 45.0], beta0=100.0, target=50.0)
+    inv = drive_from(d, 400.0, misfits=[395.0, 45.0], beta0=100.0, target=50.0)
     assert d.history[1]["action"] == "target"
     assert d.history[1]["beta_after"] == d.history[1]["beta_before"]
     assert inv.invProb.opt.stopNextIteration is False  # that is TargetMisfit's job, not ours
@@ -104,7 +127,8 @@ def test_picks_up_beta0_at_first_iteration_when_no_estimator_ran():
     d.initialize()
     assert d._beta0 is None
     inv.invProb.beta = 80.0                            # an estimator sets it before the first endIter
-    inv.invProb.phi_d = 400.0
+    inv.invProb.phi_d_last = 400.0
+    inv.invProb.phi_d = 399.0                          # a plateau, so it cools
     inv.invProb.opt.iter = 1
     d.endIter()
     assert d._beta0 == 80.0 and d.beta_floor == pytest.approx(40.0)
@@ -132,10 +156,11 @@ def test_make_directives_selects_the_schedule_from_the_option():
     assert isinstance(fixed[1], BetaSchedule)                       # default is unchanged
     system.options.update(directives__beta__schedule="misfit",
                           directives__beta__progress_threshold=0.2,
-                          directives__beta__stall_iterations=5)
+                          directives__beta__stall_iterations=5,
+                          directives__beta__stall_progress=0.02)
     chosen = system.make_directives()
     assert isinstance(chosen[1], MisfitDrivenBetaSchedule)
-    assert chosen[1].progress_threshold == 0.2 and chosen[1].stall_iterations == 5
+    assert chosen[1].progress_threshold == 0.2 and chosen[1].stall_iterations == 5 and chosen[1].stall_progress == 0.02
     assert isinstance(chosen[2], TargetMisfit)                      # still last of the three
 
 
