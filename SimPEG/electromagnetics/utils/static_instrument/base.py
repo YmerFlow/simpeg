@@ -30,6 +30,7 @@ from SimPEG.electromagnetics.utils.em1d_utils import get_2d_mesh,plot_layer, get
 from SimPEG.regularization import LaterallyConstrained, RegularizationMesh
 
 from .thickness import build_log_spaced_layer_thick
+from .schedules import MisfitDrivenBetaSchedule
 from .utils import detect_cpu_availability
 
 import warnings
@@ -495,10 +496,22 @@ class XYZSystem(object):
     "Random seed for the beta estimator. Fixed value ensures reproducible results across runs with identical parameters. Change to any integer for a different (but still reproducible) initialization, or clear to use a random seed each run."
     directives__beta__beta0_ratio : float = 10.
     "Initial regularization strength as a multiple of the estimated optimal beta. Higher values (10–100) start with a heavily smoothed model and relax regularization gradually — this is the standard Tikhonov approach and typically converges in 20–30 iterations. Values near 1 give the data too much control immediately, leading to slow or erratic convergence. Recommended: 10–50."
-    directives__beta__cooling_factor=2
-    "Factor by which the regularization weight (beta) is divided at each cooling step. Default 2 halves beta each step. Larger values (4–10) cool faster and may converge in fewer iterations but risk overshooting the data misfit target."
+    directives__beta__schedule : typing.Literal['fixed', 'misfit'] = 'fixed'
+    "How the regularization weight (beta) is reduced between Gauss-Newton iterations. 'fixed': divide by cooling_factor every cooling_rate iterations regardless of progress (the classic schedule). 'misfit': hold beta while the data misfit is still improving by more than progress_threshold per iteration, cool when it plateaus by cooling_factor (optionally scaled by the misfit ratio, see ratio_cap), never below beta_min_ratio times the starting beta, and stop when stall_iterations iterations of cooling improved the misfit by less than stall_progress. 'misfit' typically reaches the target in fewer iterations and stops cleanly when the data cannot be fit instead of running to max_iter."
+    directives__beta__cooling_factor : float = 2.
+    "Factor by which the regularization weight (beta) is divided at each cooling step. Default 2 halves beta each step. Larger values (4–10) cool faster and may converge in fewer iterations but risk overshooting the data misfit target. With schedule='misfit' this is the base factor, multiplied by the misfit ratio when far from the target."
     directives__beta__cooling_rate=1
-    "Number of Gauss-Newton outer iterations between each beta cooling step. Default 1 cools every iteration. Increase to 2–3 if the inversion is oscillating or if you want more iterations at each regularization level before reducing it."
+    "Number of Gauss-Newton outer iterations between each beta cooling step (schedule='fixed' only). Default 1 cools every iteration. Increase to 2–3 if the inversion is oscillating or if you want more iterations at each regularization level before reducing it."
+    directives__beta__progress_threshold : float = 0.10
+    "schedule='misfit' only. Minimum fractional reduction of the data misfit from one iteration to the next for beta to be cooled. Below it beta is held and a stall is counted. Default 0.10 (10%)."
+    directives__beta__ratio_cap : float = 1.0
+    "schedule='misfit' only. If above 1, the cooling factor is multiplied by the misfit ratio (current / target) capped at this value, so a poor fit cools harder. Default 1 (off): on the stitched 1D problem the optimizer, not beta, sets the pace of misfit reduction, and larger beta steps did not buy faster convergence."
+    directives__beta__beta_min_ratio : float = 1e-8
+    "schedule='misfit' only. Floor on beta as a fraction of the starting (estimated) beta. Reaching it with the misfit still above target counts as a stall. Default 1e-8."
+    directives__beta__stall_iterations : int = 6
+    "schedule='misfit' only. Length of the window, in iterations, over which the data misfit must improve by at least stall_progress while beta is being cooled; otherwise the inversion stops with the reason in the log. Default 6."
+    directives__beta__stall_progress : float = 0.05
+    "schedule='misfit' only. Minimum fractional improvement of the data misfit over the stall window for the inversion to continue. Default 0.05 (5%)."
     directives__irls__enable = False
     "Enable sparse (IRLS) inversion after the smooth L2 model converges. IRLS produces a model with sharper layer boundaries by iteratively reweighting the regularization. The smooth L2 model is always produced first and saved regardless."
     directives__irls__max_iterations = 30
@@ -518,10 +531,20 @@ class XYZSystem(object):
             print('setting manual random seed for repeatabillity')
         else:
             BetaEstimate = directives.BetaEstimate_ByEig(beta0_ratio=self.directives__beta__beta0_ratio)
+        if self.directives__beta__schedule == 'misfit':
+            schedule = MisfitDrivenBetaSchedule(
+                progress_threshold=self.directives__beta__progress_threshold,
+                cooling_factor=self.directives__beta__cooling_factor,
+                ratio_cap=self.directives__beta__ratio_cap,
+                beta_min_ratio=self.directives__beta__beta_min_ratio,
+                stall_iterations=self.directives__beta__stall_iterations,
+                stall_progress=self.directives__beta__stall_progress)
+        else:
+            schedule = SimPEG.directives.BetaSchedule(coolingFactor=self.directives__beta__cooling_factor,
+                                                      coolingRate=self.directives__beta__cooling_rate)
         dirs = [
             BetaEstimate,
-            SimPEG.directives.BetaSchedule(coolingFactor=self.directives__beta__cooling_factor, 
-                                           coolingRate=self.directives__beta__cooling_rate),
+            schedule,
             SimPEG.directives.TargetMisfit()]
 
         #            directives.SaveOutputEveryIteration(save_txt=False),
