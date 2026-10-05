@@ -178,8 +178,8 @@ class XYZClusterer:
 
 
 class Simulation1DLayeredStitchedFastCoeff(tdem.Simulation1DLayeredStitched):
-    """Stitched 1D TEM simulation that approximates the per-sounding forward
-    coefficients by sampling source height.
+    """Stitched 1D TEM simulation that builds the per-sounding forward
+    coefficients by an EXACT single-reference rescale over source height.
 
     The stitched forward pre-computes, per sounding, the model-independent
     Hankel/DLF transform coefficients ``(As, frequencies, lambs, unique_lambs,
@@ -188,18 +188,26 @@ class Simulation1DLayeredStitchedFastCoeff(tdem.Simulation1DLayeredStitched):
     waveform, gate times — constant across a survey) the ONLY per-sounding variation
     is the analytic vertical factor ``exp(-lambd*(z+h))`` that multiplies ``C0s``/
     ``C1s``; ``As``/``lambs``/``W``/``frequencies`` are identical for every sounding.
+    Because the receiver sits a fixed offset above the source (``z = h + rx_z``,
+    base_1d:507), the exponent is ``-lambd*(2*h + rx_z)``, so the entire height
+    dependence is the scalar ``exp(-2*lambd*h)``.  The coefficients at any height are
+    therefore an EXACT rescale of the coefficients at a single reference height
+    ``h0``::
 
-    Rather than rebuild all N coefficient sets (the dominant fixed cost of a large
-    inversion — profiled at ~756 s for 5648 soundings), this builds coefficients at
-    ``fast_coeff_n_alt`` sampled source heights spanning [min, max] and linearly
-    interpolates ``C0s``/``C1s`` per sounding.  Approximate, but the interpolated
-    quantity is a smooth analytic exponential, so a modest number of samples keeps
-    the error well below the data noise floor.  Height is varied by shifting the
-    passed topography z (height above topo = src_z - topo_z), so no source objects
-    are mutated.
+        C0s(h) = C0s(h0) * exp(-2*lambd*(h - h0))
+        C1s(h) = C1s(h0) * exp(-2*lambd*(h - h0))
+
+    So instead of rebuilding all N coefficient sets (the dominant fixed cost of a
+    large inversion — profiled at ~756 s for 5648 soundings) this builds ONE
+    coefficient set at a reference height and applies a per-sounding scalar ``exp``.
+    This is exact to floating-point epsilon (not an approximation): the forward
+    response and the inverted model are identical to the stock per-sounding build.
+    ``h0`` is anchored at the survey minimum height so every rescale exponent is
+    ``<= 0`` (no overflow; it underflows to 0 at the highest wavenumbers exactly as
+    the stock build does at that height).  Height is set by shifting the passed
+    topography z (height above topo = src_z - topo_z), so no source objects are
+    mutated.
     """
-
-    fast_coeff_n_alt = 20  #: number of sampled source heights to build+interpolate
 
     def get_coefficients(self):
         import time as _time
@@ -214,40 +222,32 @@ class Simulation1DLayeredStitchedFastCoeff(tdem.Simulation1DLayeredStitched):
             - self.topo[i, 2]
             for i in range(n)
         ])
-        K = int(min(self.fast_coeff_n_alt, n))
-        if K < 2 or np.ptp(heights) == 0:
-            print("##FASTCOEFF## degenerate height range; using exact per-sounding coefficients")
-            return super().get_coefficients()
 
-        samples = np.linspace(heights.min(), heights.max(), K)
+        # Build the coefficient kernel ONCE, at the minimum survey height h0.
+        # Anchoring at the minimum keeps every rescale exponent -2*lambd*(h-h0) <= 0,
+        # so exp() never overflows (it underflows to 0 at the highest wavenumbers,
+        # exactly as the stock per-sounding build does at that height).
+        h0 = float(heights.min())
         base_args = list(self.input_args_for_coeff(0))
         src0_z = self.survey.get_sources_by_sounding_number(0)[0].location[2]
         topo0 = np.asarray(self.topo[0, :], dtype=float)
+        # height above topo = src0_z - topo_z  ->  set topo_z = src0_z - h0
+        base_args[1] = np.array([topo0[0], topo0[1], src0_z - h0], dtype=float)
 
         _t0 = _time.time()
-        sample_coeffs = []
-        for hs in samples:
-            args = list(base_args)
-            # height above topo = src0_z - topo_z  ->  set topo_z = src0_z - hs
-            args[1] = np.array([topo0[0], topo0[1], src0_z - hs], dtype=float)
-            sample_coeffs.append(run_simulation_time_domain(tuple(args)))
-        print(f"##FASTCOEFF## built {K} sample-height coefficient sets in "
-              f"{_time.time()-_t0:.2f}s (height {heights.min():.1f}..{heights.max():.1f} m, "
-              f"{n} soundings)")
+        As, freqs, lambs, u_lambs, inv_lambs, C0_ref, C1_ref, W = \
+            run_simulation_time_domain(tuple(base_args))
+        print(f"##FASTCOEFF## built 1 reference coefficient set at h0={h0:.1f} m in "
+              f"{_time.time()-_t0:.2f}s, exact-rescaled to {n} soundings "
+              f"(height {heights.min():.1f}..{heights.max():.1f} m)")
 
-        As, freqs, lambs, u_lambs, inv_lambs, _c0, _c1, W = sample_coeffs[0]
-        C0_stack = np.stack([c[5] for c in sample_coeffs])
-        C1_stack = np.stack([c[6] for c in sample_coeffs])
-
-        j_idx = np.clip(np.searchsorted(samples, heights), 1, K - 1)
+        # Exact factorization: C0s(h) = C0s(h0) * exp(-2*lambd*(h-h0)).  lambs has the
+        # same shape as C0_ref/C1_ref, so the scalar height delta broadcasts directly.
         coeffs = []
         for i in range(n):
-            j = j_idx[i]
-            h0, h1 = samples[j - 1], samples[j]
-            w = 0.0 if h1 == h0 else (heights[i] - h0) / (h1 - h0)
-            C0 = (1.0 - w) * C0_stack[j - 1] + w * C0_stack[j]
-            C1 = (1.0 - w) * C1_stack[j - 1] + w * C1_stack[j]
-            coeffs.append((As, freqs, lambs, u_lambs, inv_lambs, C0, C1, W))
+            s = np.exp(-2.0 * lambs * (heights[i] - h0))
+            coeffs.append((As, freqs, lambs, u_lambs, inv_lambs,
+                           C0_ref * s, C1_ref * s, W))
         self._coefficients = coeffs
         self._coefficients_set = True
 
@@ -470,9 +470,7 @@ class XYZSystem(object):
     simulation__n_cpu = 3
     "Number of CPU threads for parallel simulation. Set to the number of available cores on the machine (minus 1–2 for OS headroom). Increasing beyond the number of physical cores gives diminishing returns."
     simulation__fast_coefficients = False
-    "Approximate the per-sounding forward coefficients by building them at a few sampled source heights and linearly interpolating (see Simulation1DLayeredStitchedFastCoeff). Replaces the O(n_soundings) coefficient build (the dominant fixed cost of a large inversion) with an O(fast_coefficients_n_alt) build. Approximate; validate that the model is unchanged within noise before using in production."
-    simulation__fast_coefficients_n_alt = 20
-    "Number of sampled source heights (between the survey min and max) used when simulation__fast_coefficients is True. Only used when that flag is set."
+    "Build the per-sounding forward coefficients by an EXACT single-reference rescale over source height (see Simulation1DLayeredStitchedFastCoeff). Replaces the O(n_soundings) coefficient build (the dominant fixed cost of a large inversion) with one reference build plus a per-sounding scalar exp. Exact to floating-point epsilon under fixed survey geometry: the forward response and inverted model are identical to the stock per-sounding build."
     def make_simulation(self, survey, thicknesses):
         sim_cls = (Simulation1DLayeredStitchedFastCoeff
                    if self.simulation__fast_coefficients
@@ -496,8 +494,6 @@ class XYZSystem(object):
                 parallel=self.simulation__parallel,
                 n_cpu=self.simulation__n_cpu,
                 n_layer=self.n_layer_used)
-        if self.simulation__fast_coefficients:
-            sim.fast_coeff_n_alt = self.simulation__fast_coefficients_n_alt
         return sim
 
     
