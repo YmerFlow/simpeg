@@ -71,6 +71,53 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
     def area(self):
         return self.gex.General['TxLoopArea']
 
+    simulation__receiver_filters: bool = True
+    """Apply the receiver low-pass filters the GEX declares.
+
+    A GEX can describe up to two first-order low-pass filters between the
+    receiver coil and the recorded gate: the coil filter
+    (``General/RxCoilLPFilter1``) and a per-channel board filter
+    (``Channel<n>/TiBLowPassFilter``), each written as ``<order> <cutoff Hz>``.
+    They shape the earliest gates strongly: on the SkyTEM 304 (210 kHz and
+    300 kHz) leaving them out puts the forward 20% low at 8-13 us and 3% low
+    at 300 us against Workbench's forward of the same model, which an
+    inversion then absorbs as a spurious conductor in the top few metres
+    (YmerFlow/Ymerflow#94). The simulation applies them in the frequency domain
+    (receiver ``lp_*`` properties); this only wires the GEX values through, for
+    every moment. A GEX that declares no filter gets none. Switch off to
+    reproduce older results."""
+
+    def receiver_filters(self, moment):
+        """The low-pass filters the GEX declares for a zero-based moment index.
+
+        Returns ``[(order, cutoff_hz), ...]`` with up to two entries, coil filter
+        first; an entry is omitted where the GEX does not declare it.
+        libaarhusxyz folds the trailing digit of ``RxCoilLPFilter1`` into the
+        key, so the coil filter is read as ``RxCoilLPFilter``.
+        """
+        filters = []
+        coil = self.gex.General.get("RxCoilLPFilter")
+        board = self._channel(moment).get("TiBLowPassFilter")
+        for spec in (coil, board):
+            if spec is None:
+                continue
+            if isinstance(spec, str):
+                spec = spec.split()
+            spec = np.atleast_1d(np.asarray(spec, dtype=float))
+            if spec.size != 2 or spec[1] <= 0:
+                raise ValueError(
+                    "GEX low-pass filter must be '<order> <cutoff Hz>', got %r" % (spec,))
+            filters.append((float(spec[0]), float(spec[1])))
+        return filters
+
+    def make_receiver(self, location, times, orientation, moment):
+        rx = tdem.receivers.PointMagneticFluxTimeDerivative(location, times, orientation)
+        if self.simulation__receiver_filters:
+            for slot, (order, cutoff) in enumerate(self.receiver_filters(moment), start=1):
+                setattr(rx, "lp_cutoff_frequency_%d" % slot, cutoff)
+                setattr(rx, "lp_power_%d" % slot, order)
+        return rx
+
     def _waveform_points(self, moment):
         """Waveform (time, current) points for a moment. A per-moment
         Waveform<Moment>Point (e.g. WaveformLMPoint) takes precedence; systems
@@ -160,8 +207,8 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
         radius = np.sqrt(area / np.pi)
         sources = []
         for moment in range(self.n_moments):
-            receivers = [tdem.receivers.PointMagneticFluxTimeDerivative(
-                receiver_location, times[moment], rx_orientations[moment])]
+            receivers = [self.make_receiver(
+                receiver_location, times[moment], rx_orientations[moment], moment)]
             if horizontal_offset < 1.0:
                 # Central-loop geometry — the receiver sits at the loop centre
                 # (e.g. Xcite, RxCoilPosition ~ 0). A point MagDipole source is
