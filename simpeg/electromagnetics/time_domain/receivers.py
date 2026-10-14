@@ -28,6 +28,10 @@ class BaseRx(BaseTimeRx):
         bw_power=0.0,
         lp_cutoff_frequency=2.1e5,
         lp_power=0.0,
+        lp_cutoff_frequency_1=3e5,
+        lp_power_1=0.0,
+        lp_cutoff_frequency_2=3e5,
+        lp_power_2=0.0,
         **kwargs,
     ):
         if (key := "projComp") in kwargs.keys():
@@ -45,6 +49,10 @@ class BaseRx(BaseTimeRx):
         self.bw_power = bw_power
         self.lp_cutoff_frequency = lp_cutoff_frequency
         self.lp_power = lp_power
+        self.lp_cutoff_frequency_1 = lp_cutoff_frequency_1
+        self.lp_power_1 = lp_power_1
+        self.lp_cutoff_frequency_2 = lp_cutoff_frequency_2
+        self.lp_power_2 = lp_power_2
         super().__init__(locations=locations, times=times, **kwargs)
 
     @property
@@ -147,6 +155,78 @@ class BaseRx(BaseTimeRx):
     @lp_power.setter
     def lp_power(self, var):
         self._lp_power = validate_float("lp_power", var, min_val=0.0, max_val=0.99999)
+
+    @property
+    def lp_cutoff_frequency_1(self):
+        """First cascaded first-order low pass filter cutoff frequency.
+
+        Returns
+        -------
+        float
+            Cutoff frequency (Hz) of the first cascaded low pass stage.
+        """
+        return self._lp_cutoff_frequency_1
+
+    @lp_cutoff_frequency_1.setter
+    def lp_cutoff_frequency_1(self, var):
+        self._lp_cutoff_frequency_1 = validate_float(
+            "lp_cutoff_frequency_1", var, min_val=0.0
+        )
+
+    @property
+    def lp_power_1(self):
+        """First cascaded first-order low pass filter power (order).
+
+        A power of ``0`` (the default) makes the stage the identity, so a
+        receiver that never sets it is unaffected. Unlike the singular
+        ``lp_power`` this is an integer filter order and is not capped below 1.
+
+        Returns
+        -------
+        float
+            Order of the first cascaded low pass stage.
+        """
+        return self._lp_power_1
+
+    @lp_power_1.setter
+    def lp_power_1(self, var):
+        self._lp_power_1 = validate_float("lp_power_1", var, min_val=0.0)
+
+    @property
+    def lp_cutoff_frequency_2(self):
+        """Second cascaded first-order low pass filter cutoff frequency.
+
+        Returns
+        -------
+        float
+            Cutoff frequency (Hz) of the second cascaded low pass stage.
+        """
+        return self._lp_cutoff_frequency_2
+
+    @lp_cutoff_frequency_2.setter
+    def lp_cutoff_frequency_2(self, var):
+        self._lp_cutoff_frequency_2 = validate_float(
+            "lp_cutoff_frequency_2", var, min_val=0.0
+        )
+
+    @property
+    def lp_power_2(self):
+        """Second cascaded first-order low pass filter power (order).
+
+        A power of ``0`` (the default) makes the stage the identity. Unlike the
+        singular ``lp_power`` this is an integer filter order and is not capped
+        below 1.
+
+        Returns
+        -------
+        float
+            Order of the second cascaded low pass stage.
+        """
+        return self._lp_power_2
+
+    @lp_power_2.setter
+    def lp_power_2(self, var):
+        self._lp_power_2 = validate_float("lp_power_2", var, min_val=0.0)
 
     def getSpatialP(self, mesh, f):
         """Get spatial projection matrix from mesh to receivers.
