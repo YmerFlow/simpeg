@@ -49,9 +49,17 @@ def make_xyz():
                                     "tilt_x": [0.0], "tilt_y": [0.0]})
     for name in ("dbdt_ch1gt", "dbdt_ch2gt", "dbdt_std_ch1gt", "dbdt_std_ch2gt"):
         xyz.layer_data[name] = pd.DataFrame(np.full((1, 4), 1e-9))
-    # A three-layer 50 ohm.m model, so the same dataset can be forward-modelled.
-    xyz.layer_data["resistivity"] = pd.DataFrame(np.full((1, 3), 50.0))
-    xyz.layer_data["dep_top"] = pd.DataFrame(np.array([[0.0, 10.0, 40.0]]))
+    # Every gate is in use: the per-datum mask dual.py builds reads these, so
+    # the forward exercises the real mask path instead of the absent-array
+    # fallback. One flag per gate, matching the four-gate data arrays.
+    for name in ("dbdt_inuse_ch1gt", "dbdt_inuse_ch2gt"):
+        xyz.layer_data[name] = pd.DataFrame(np.ones((1, 4)))
+    # A four-layer 50 ohm.m model, so the same dataset can be forward-modelled.
+    # The model width must match the gate/layer count (four): libaarhusxyz pads
+    # every layer array to the widest one (the four-gate data), so a narrower
+    # dep_top would be NaN-padded and the stitched ExpMap would outrun the model.
+    xyz.layer_data["resistivity"] = pd.DataFrame(np.full((1, 4), 50.0))
+    xyz.layer_data["dep_top"] = pd.DataFrame(np.array([[0.0, 10.0, 40.0, 80.0]]))
     return xyz
 
 
@@ -127,7 +135,7 @@ def test_filters_change_the_early_time_response():
     # leave none, so open it fully.
     gates = dict(gate_filter__start_lm=0, gate_filter__end_lm=4,
                  gate_filter__start_hm=0, gate_filter__end_hm=4,
-                 startmodel__n_layer=3)   # the fixture model has 3 layers
+                 startmodel__n_layer=4)   # the fixture model has 4 layers
     on = system(gex, **gates)
     off = system(gex, simulation__receiver_filters=False, **gates)
     d_on = on.forward(simulation__parallel=False, simulation__n_cpu=1)
