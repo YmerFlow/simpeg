@@ -64,6 +64,11 @@ def make_xyz(n_moments):
     for ch in range(1, n_moments + 1):
         for name in ("dbdt_ch%dgt", "dbdt_std_ch%dgt"):
             xyz.layer_data[name % ch] = pd.DataFrame(np.full((1, N_GATES), 1e-9))
+        # Every gate is in use. ``_usable`` ANDs this column with boolean
+        # finiteness arrays, so the flag must be boolean. One flag per gate,
+        # matching the data arrays.
+        xyz.layer_data["dbdt_inuse_ch%dgt" % ch] = pd.DataFrame(
+            np.ones((1, N_GATES), dtype=bool))
     # A 50 ohm.m model, so the same dataset can be forward-modelled. Its layer
     # count matches the gate count so libaarhusxyz does not pad the model
     # columns up to the (wider) data columns with a trailing NaN layer, which
@@ -141,24 +146,17 @@ def test_dual_moment_receivers_carry_the_declared_filters():
 
 
 def test_no_filters_declared_means_no_filtering():
-    """An unset ``lp_*`` is simpeg's 'off'; a bare GEX must set nothing."""
+    """``lp_power`` 0 is simpeg's 'off'; a bare GEX must leave it there."""
     (rx,) = receivers(system(FakeGEX()))
-    assert not hasattr(rx, "lp_power_1") and not hasattr(rx, "lp_power_2")
+    assert rx.lp_power_1 == 0 and rx.lp_power_2 == 0
 
 
 def test_option_switches_the_filters_off():
     (rx,) = receivers(system(FakeGEX(coil=np.array([1.0, 200e3])),
                              simulation__receiver_filters=False))
-    assert not hasattr(rx, "lp_power_1") and not hasattr(rx, "lp_power_2")
+    assert rx.lp_power_1 == 0 and rx.lp_power_2 == 0
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "The feature wires the GEX filters onto the receivers' numbered slots "
-    "lp_cutoff_frequency_1/_2 and lp_power_1/_2, byte-identical to the source. "
-    "This simpeg's Simulation1DLayered (simulation_1d.py) applies only the "
-    "single, un-numbered rx.lp_cutoff_frequency / rx.lp_power, so the wired "
-    "numbered slots have no effect on the forward here and the ratio stays 1.0. "
-    "The simulation gaining a second low-pass slot is a separate change."))
 def test_filters_change_the_early_time_response():
     """End to end on one central-loop sounding over a halfspace.
 
