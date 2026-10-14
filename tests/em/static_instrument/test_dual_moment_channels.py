@@ -16,7 +16,7 @@ import warnings
 import numpy as np
 import pytest
 
-from SimPEG.electromagnetics.utils.static_instrument.dual import (
+from simpeg.electromagnetics.utils.static_instrument.dual import (
     _channel_indices,
     _channel_field,
     _declared_rx_orientation,
@@ -148,7 +148,7 @@ class Resolver:
 
     @property
     def moment_channels(self):
-        from SimPEG.electromagnetics.utils.static_instrument import dual
+        from simpeg.electromagnetics.utils.static_instrument import dual
         return dual.DualMomentTEMXYZSystem.moment_channels.fget(self)
 
 
