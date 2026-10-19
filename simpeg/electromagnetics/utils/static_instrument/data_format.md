@@ -1,3 +1,29 @@
+# The static_instrument on-disk convention (canonical)
+
+This file is the **single canonical specification** of the amplitude convention
+for `static_instrument` data. Everything downstream (the YmerFlow importers, the
+`ymerflow-processing` library, the platform docs) conforms to it and links here
+rather than restating the physics. The whole stack hinges on two statements, so
+they are made explicit and up front:
+
+1. **The data are per unit transmitter moment.** `dbdt_chNgt` stores dB/dt that
+   has already had the transmitter dipole moment divided out — it is *not*
+   re-applied to the arrays at read. The forward proves it: the source carries
+   **unit dipole moment** (`current = 1/area` in `dual.py`) precisely because the
+   data are normalised per unit transmitter moment. The real
+   `ApproxDipoleMoment` is used **only** for the noise floor
+   (`noise_level_1ms / dipole_moment`), never to scale the data.
+
+2. **Receiver geometry is `GateFactor`, applied at read — it is NOT in the
+   arrays.** The per-channel GEX `GateFactor` normalises by receiver geometry and
+   is multiplied in at read time (`dual.py:251`), together with `scalefactor`
+   (raw → V/m², from `model_info`). **Neither is ever baked into the stored
+   arrays.** Baking either in would make SimPEG double-apply it.
+
+So the stored form is: raw `dbdt_chNgt` per unit transmitter moment, plus
+`scalefactor` and `GateFactor` as load-bearing metadata applied at read, plus
+`dbdt_std_chNgt` as a dimensionless relative fraction. The sections below give
+the details.
 
 ## Data (`dbdt_ch1gt`, `dbdt_ch2gt`) and `scalefactor`
 
