@@ -406,8 +406,8 @@ class XYZSystem(object):
 
     dipole_moments = [1]
     
-    uncertainties__std_data = 0.03
-    "Minimum relative noise floor as a fraction of data amplitude (e.g. 0.03 = 3%). When measured stacking noise is lower than this value, this floor is used instead. Prevents overfitting in low-noise windows. Typical range: 0.02–0.10."
+    uncertainties__std_data = 0
+    "Minimum relative error as a fraction of data amplitude, applied as max(this, the file's dbdt_std). Default 0 (changed from 0.03 on 2026-10-21, Ben Bloss): the errors in the file are the ones a processing pipeline assigned and they weight the data in the inversion, so the inversion must not raise them -- a delivery whose prestack stacking gives 2% was being overridden by 3%. Set it only for data that carry no uncertainties at all (e.g. a forward model); a value of 0.03 restores the old behaviour. See ymerflow-business#110."
     uncertainties__std_data_override = False
     "If true, ignore per-sounding noise from stacking and apply 'std_data' uniformly to all soundings. Use when data lacks measured STD (e.g. forward model output), or to impose a uniform noise floor across the survey."
     uncertainties__noise_level_1ms = 1e-9
