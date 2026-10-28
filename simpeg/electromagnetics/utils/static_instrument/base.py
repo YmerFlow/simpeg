@@ -666,7 +666,16 @@ class XYZSystem(object):
     a Delaunay triangulation of their positions, and alpha_r scales how strongly adjacent soundings
     are pulled toward each other.
 
-    To target an effective lateral resolution D with sounding spacing d, set:
+    What alpha_r means depends on regularization__distance_weighted:
+      - False (default): every triangulation link is a plain difference, whatever its length, so
+        alpha_r is a per-link weight, not a length scale. A link between two flight lines
+        kilometres apart weighs the same as one between neighbouring soundings on a line
+        (ymerflow-business#119). The guidance below applies to this mode.
+      - True: each difference is divided by the link's length, so lateral smoothness is a
+        gradient in metres and long links are automatically weak. alpha_r then sets a length
+        scale: L_r = sqrt(alpha_r / alpha_s) metres (e.g. alpha_s 1e-4, alpha_r 1 → 100 m).
+
+    To target an effective lateral resolution D with sounding spacing d (distance_weighted False), set:
         alpha_r ≈ (D / d)² × alpha_z
     For example, with 30 m sounding spacing and a target resolution of ~100 m:
         alpha_r ≈ (100/30)² × 1.0 ≈ 10
@@ -689,6 +698,23 @@ class XYZSystem(object):
 
     Note that the absolute values of alpha_r and alpha_z matter less than their ratio — doubling
     both changes nothing about the model shape, only about how alpha_s balances against smoothness.
+
+    With regularization__distance_weighted False (default) this is a per-layer-interface weight;
+    with it True, differences are divided by the distance between layer centres and alpha_z sets a
+    vertical length scale: L_z = sqrt(alpha_z / alpha_s) metres (alpha_s 1e-4, alpha_z 0.0625 → 25 m).
+    """
+    regularization__distance_weighted: bool = False
+    """Divide each smoothness difference by the real distance it spans (ymerflow-business#119).
+
+    False (default, historical behaviour): every lateral triangulation link and every layer
+    interface is a plain difference, so alpha_r and alpha_z are per-link and per-layer weights,
+    not length scales. Because the triangulation joins neighbouring flight lines, a sounding is then
+    tied to a line kilometres away as strongly as to its own neighbours wherever the data are weak.
+
+    True: lateral differences are divided by the link length and vertical ones by the distance
+    between layer centres, as in SimPEG's tensor-mesh regularization and Workbench LCI/SCI. Long
+    cross-line links become weak automatically, and alpha_r / alpha_z set length scales in metres:
+    L = sqrt(alpha / alpha_s). Existing alpha values do not carry over between the two modes.
     """
 
     def make_regularization(self, thicknesses):
@@ -724,7 +750,13 @@ class XYZSystem(object):
                 "Could not build a non-degenerate lateral regularization mesh "
                 "from the sounding positions")
         mesh_vertical = simpeg.electromagnetics.utils.em1d_utils.set_mesh_1d(hz)
-        mesh_reg = [mesh_radial, mesh_vertical]
+        # Edge lengths come from the true sounding positions, not the jittered ones the
+        # triangulation may have needed; Delaunay keeps the input point order.
+        mesh_reg = simpeg.regularization.LCRegularizationMesh(
+            [mesh_radial, mesh_vertical],
+            distance_weighted=self.regularization__distance_weighted,
+            locations=coords,
+        )
         n_param = int(mesh_radial.n_nodes * mesh_vertical.nC)
         reg_map = simpeg.maps.IdentityMap(nP=n_param)    # Mapping between the model and regularization
         reg = simpeg.regularization.LaterallyConstrained(
