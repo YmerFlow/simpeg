@@ -26,6 +26,7 @@ from simpeg.utils import mkvc
 import simpeg.electromagnetics.time_domain as tdem
 import simpeg.electromagnetics.utils.em1d_utils
 from simpeg.electromagnetics.utils.em1d_utils import get_vertical_discretization_time
+from simpeg.electromagnetics.utils.doi_utils import doi_christiansen_auken
 from simpeg.regularization import LaterallyConstrained
 
 from .thickness import build_log_spaced_layer_thick
@@ -597,6 +598,7 @@ class XYZSystem(object):
         }
         cluster_opts['clustering__enabled'] = False  # prevent recursion
         cluster_opts['validate'] = False
+        cluster_opts['doi__enable'] = False  # only the start model is used
         cluster_opts['regularization__alpha_r'] = 0
         cluster_opts['sounding_filter'] = raw_medoid_indices
         for key, val in self.options.items():
@@ -872,7 +874,62 @@ class XYZSystem(object):
         fl = self.xyz.flightlines.copy()
         return fl.rename(columns={c: "input_" + c for c in self.MISFIT_COLUMNS if c in fl.columns})
 
-    def inverted_model_to_xyz(self, model, thicknesses):
+    doi__enable: bool = True
+    """Write the Christiansen and Auken (2012) depth of investigation onto every inverted model.
+
+    The model gets the flightline columns doi_upper and doi_lower, in m below the surface,
+    positive down, NaN for soundings that were not inverted. A DOI at the top of the halfspace
+    is a lower bound: the halfspace alone is still above the threshold. Costs one extra
+    Jacobian at the final model, about half an iteration (2.6% of a 21-iteration run on a
+    VTEM line), and two with IRLS, where the smooth and the sparse model each
+    get their own. The predicted data of the final model are reused. If it fails, the inversion still
+    returns its models, with a warning and without the DOI columns. Method, scale and
+    thresholds are documented in simpeg.electromagnetics.utils.doi_utils."""
+    doi__upper: float = 1.5
+    "Threshold on the cumulative sensitivity for doi_upper, the shallow, conservative DOI. Default 1.5, Aarhus Workbench's DOIAbsHigh. A larger threshold gives a shallower DOI."
+    doi__lower: float = 0.75
+    "Threshold on the cumulative sensitivity for doi_lower, the deeper DOI. Default 0.75, Aarhus Workbench's DOIAbsLow (the paper's single threshold is 0.8)."
+    doi__weighted: bool = False
+    "False (default): a layer's sensitivity is the sum of |d ln d / d ln sigma| over the gates used, the scale Aarhus Workbench reports and the default thresholds belong to. True: each term is also divided by the gate's relative uncertainty, eq. 3 of the paper as printed; with the default thresholds the DOI then sits at or near the model base."
+    doi__write_sensitivity: bool = True
+    "Also write the cumulative sensitivity (dimensionless; each layer plus everything below it, at the layer top) as the layer table cumulative_sensitivity, for QC plots or for fading the model with depth."
+
+    def _add_doi(self, xyzsparse, model, dpred):
+        """Put the DOI of ``model`` [m, positive down] on its model, still in filtered sounding order.
+
+        Warns instead of raising: the DOI is derived from the model and must never cost it.
+        """
+        import time
+        t0 = time.time()
+        try:
+            W = self.data_misfit.W.diagonal()
+            with np.errstate(divide="ignore"):
+                rel = np.abs(1 / W / self.data_misfit.data.dobs)   # inf where W is 0: not used
+            doi, S, _ = doi_christiansen_auken(
+                self.data_misfit.simulation, model, rel,
+                (self.doi__upper, self.doi__lower), self.doi__weighted, d_pred=dpred)
+        except Exception as err:
+            warnings.warn("DOI not written: %s" % err)
+            return
+        xyzsparse.flightlines["doi_upper"] = doi[:, 0]
+        xyzsparse.flightlines["doi_lower"] = doi[:, 1]
+        if self.doi__write_sensitivity:
+            xyzsparse.layer_data["cumulative_sensitivity"] = pd.DataFrame(S)
+        print(f"##PHASE## doi: {time.time() - t0:.2f}s")
+
+    def inverted_model_to_xyz(self, model, thicknesses, dpred=None):
+        """The model as an XYZ over all soundings (NaN where a sounding was filtered out).
+
+        Parameters
+        ----------
+        model : ndarray (n_sounding * n_layer,)
+            Inverted model, log conductivity [ln S/m], sounding-major.
+        thicknesses : ndarray (n_layer - 1,)
+            Layer thicknesses [m].
+        dpred : ndarray (n_data,), optional
+            Predicted data of ``model``. Given, and with ``doi__enable``, the model also gets
+            its DOI (see ``doi__enable``).
+        """
         xyzsparse = libaarhusxyz.XYZ()
         xyzsparse.model_info.update(self.xyz.model_info)
         xyzsparse.flightlines = self._flightlines_without_input_misfit()
@@ -886,6 +943,8 @@ class XYZSystem(object):
         xyzsparse.layer_data["dep_top"] = pd.DataFrame(np.meshgrid(dep_top, self.xyz.flightlines.index)[0])
         xyzsparse.layer_data["dep_bot"] = pd.DataFrame(np.meshgrid(dep_bot, self.xyz.flightlines.index)[0])
 
+        if dpred is not None and self.doi__enable:
+            self._add_doi(xyzsparse, model, dpred)
         return self.xyz.unfilter(xyzsparse, layerfilter=False)
     
     @property
@@ -941,7 +1000,8 @@ class XYZSystem(object):
 
     def make_inversion_outputs(self):
         thicknesses = self.data_misfit.simulation.thicknesses
-        last_model = self.inverted_model_to_xyz(self.inv.invProb.model, thicknesses)
+        last_model = self.inverted_model_to_xyz(self.inv.invProb.model, thicknesses,
+                                                self.inv.invProb.dpred)
         last_pred = self.forward_data_to_xyz(self.inv.invProb.dpred, inversion=True)
         self._copy_misfit(last_pred, last_model)
 
@@ -950,7 +1010,8 @@ class XYZSystem(object):
         if hasattr(self.inv.invProb, "l2model"):
             self.sparse = last_model
             self.sparsepred = last_pred
-            self.l2 = self.inverted_model_to_xyz(self.inv.invProb.l2model, thicknesses)
+            self.l2 = self.inverted_model_to_xyz(self.inv.invProb.l2model, thicknesses,
+                                                 self.inv.invProb.l2dpred)
             self.l2pred = self.forward_data_to_xyz(self.inv.invProb.l2dpred, inversion=True)
             self._copy_misfit(self.l2pred, self.l2)
 
