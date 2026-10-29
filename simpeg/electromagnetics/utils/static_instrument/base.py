@@ -929,9 +929,11 @@ class XYZSystem(object):
             self.l2pred = last_pred
 
         if hasattr(self, '_cluster_ids'):
-            # Map cluster IDs back to the full (unfiltered) sounding set
+            # Map cluster IDs back to the full (unfiltered) sounding set through
+            # the sounding filter, as FilteredXYZ.unfilter does. Not through
+            # self.xyz.flightlines.index: FilteredXYZ resets it to 0..n_kept-1.
             cluster_id_full = pd.Series(np.nan, index=self._xyz.flightlines.index, dtype=float)
-            cluster_id_full.loc[self.xyz.flightlines.index] = self._cluster_ids.astype(float)
+            cluster_id_full.loc[self.xyz.get_soundingfilter()] = self._cluster_ids.astype(float)
             for obj in [self.sparse, self.l2, self.l2pred, self.sparsepred, self.corrected]:
                 if obj is not None:
                     obj.flightlines = obj.flightlines.copy()
