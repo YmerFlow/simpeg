@@ -26,7 +26,7 @@ A new option, `startmodel__dataset`: one or more XYZ models, the outputs of earl
 
 There is no interpolation between model soundings. It is a start model, and the SCI moves it; where a gap is filled from two lines, the step halfway between them is smoothed out in the first iterations. The run report counts how many soundings took each path.
 
-The models' layers must match the inversion's. A mismatch stops the run with an error that names both layerings, unless `startmodel__resample_layers = True`, which resamples log10 resistivity onto the inversion's layers for a deliberate change of layering.
+Where the models' layers differ from the inversion's, log10 resistivity is resampled onto the inversion's layers (`startmodel__resample_layers`, default `True`), and the log and the run report name both layerings. With `startmodel__resample_layers = False` a mismatch stops the run with an error instead.
 
 ### 2. Keep the reference model separate
 
@@ -68,7 +68,7 @@ Compared against the cold run: Gauss-Newton iterations; wall time of the LCIs pl
 
 | # | Question | Decision |
 |---|---|---|
-| 1 | The models' layers differ from the inversion's | Stop with an error, unless `startmodel__resample_layers` asks for resampling. |
+| 1 | The models' layers differ from the inversion's | Resample onto the inversion's layers by default, naming both layerings in the log and report; `startmodel__resample_layers = False` stops the run instead. |
 | 2 | Reference model when starting from earlier models | The halfspace. A reference model from its own dataset is planned separately. |
 | 3 | Starting β | Every inversion records `final_beta`; a warm start begins at `warm_factor` times the recorded value, with the default factor set by the test (1, 3 or 10). `beta0` overrides. |
 | 4 | Soundings the models don't cover | The nearest model sounding within the fill distance, then the clustered or halfspace start. No interpolation. |
@@ -79,7 +79,7 @@ Compared against the cold run: Gauss-Newton iterations; wall time of the LCIs pl
 
 - `simpeg/electromagnetics/utils/static_instrument/base.py`: the options above; `make_startmodel` reads the start models; `make_mref` defaults to the halfspace with a dataset start; the starting-β rule in the directives; `final_beta` written into the output's `model_info`.
 - `simpeg/electromagnetics/utils/static_instrument/utils.py`: the matching helper, the layer check and resampling, the lateral median.
-- Tests: each matching path, the layer-mismatch error and the resampling switch, the reference default, `final_beta` written and read, the median over several start models, the `beta0` override and the fallback, the lateral median.
+- Tests: each matching path, resampling onto different layers and the error with resampling switched off, the reference default, `final_beta` written and read, the median over several start models, the `beta0` override and the fallback, the lateral median.
 - aem-processes: the dataset field for `invert_tem`, if the option is not picked up from the class as it stands.
 
 Rough size: two days, plus the test runs.
