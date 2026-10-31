@@ -28,14 +28,24 @@ A link is classified only by whether its two soundings share a `Line` value. Whe
 
 ### 2. Two weights and their length scales
 
-The lateral term becomes the sum over links of alpha_c (dm / length)^2, distance-weighted as in #28, with alpha_c depending on the link's kind:
+The lateral term becomes the sum over links of alpha_c (dm / length)^2, distance-weighted as in #28, with alpha_c depending on the link's kind. Each weight has an alpha and a length scale, and either can be set:
 
-| Option | Length scale [CRS linear unit] |
-|---|---|
-| `regularization__alpha_r_inline` | L_inline = sqrt(alpha_r_inline / alpha_s) |
-| `regularization__alpha_r_otherline` | L_otherline = sqrt(alpha_r_otherline / alpha_s) |
+| Alpha | Length scale [CRS linear unit] | Relation |
+|---|---|---|
+| `regularization__alpha_r_inline` | `regularization__L_inline` | alpha = alpha_s L^2 |
+| `regularization__alpha_r_otherline` | `regularization__L_otherline` | alpha = alpha_s L^2 |
 
-`alpha_s`, `alpha_z` and L_z are unchanged. Every docstring states the length scale, and the run report prints L_inline, L_otherline and L_z in meters (or feet) beside the alphas.
+The same pairing is added for the existing weights: `regularization__L_z` with `alpha_z`, and `regularization__L_r` with `alpha_r` for #28's single lateral scale (decision 6).
+
+How a run resolves a pair:
+
+- a length given sets its alpha;
+- an alpha given alone sets its length;
+- both given and differing by more than one part in a million stops the run, naming both values and the alpha they disagree on.
+
+When `alpha_s` changes, the lengths are held and the alphas recomputed, since the length scales are the geological choice (decision 7). The run report prints every alpha with its length, in meters or feet.
+
+In the platform's process editor the two fields of a pair are linked: editing a length rewrites its alpha, and editing an alpha rewrites its length, using the form's current `alpha_s`. The schema carries the link as an annotation on the length field, naming its alpha and `alpha_s`, so the Ymerflow form editor can apply it to any pair without knowing about inversion.
 
 Alphas for a given length scale, at `alpha_s` = 1e-4, and the resulting pull from neighboring lines 1.9 km away:
 
@@ -52,7 +62,7 @@ Alphas for a given length scale, at `alpha_s` = 1e-4, and the resulting pull fro
 
 ### 3. When the new options apply
 
-- The split applies only when either new alpha is set. With both unset, #28's behavior is unchanged: Delaunay links and one `alpha_r`.
+- The split applies only when either new weight is set, by its alpha or its length. With both unset, #28's behavior is unchanged: Delaunay links and one `alpha_r`.
 - With one set, the other defaults to `alpha_r`.
 - Both need `regularization__distance_weighted = True`, since without it they are per-link weights with no length; setting either with distance weighting off raises an error that says so.
 - The `Line` column is required; without it the run stops before inverting.
@@ -88,16 +98,19 @@ Measured for each: misfit per line, iterations, wall time, and the difference in
 
 | # | Question | Options | Recommendation |
 |---|---|---|---|
-| 1 | Parameter form | A: alphas (`alpha_r_inline`, `alpha_r_otherline`), matching `alpha_s`, `alpha_r` and `alpha_z`, with the length scales printed. B: lengths in meters (`L_inline`, `L_otherline`). C: both, lengths overriding alphas. | Open. A keeps one convention; B is what people think in. |
+| 1 | Parameter form | A: alphas only, with the lengths printed. B: lengths only. C: both, each updating the other. | Decided 2026-10-31: C (section 2). |
 | 2 | Same-line Delaunay chords | A: leave them out; the inline chain replaces them. B: keep them as inline links. | A. Chords tie a curving line's soundings across the bend. |
 | 3 | Behavior with both new options unset | A: #28 unchanged. B: always use the inline chain and otherline links. | A, so existing runs reproduce. |
 | 4 | Distance weighting off | A: error if either new option is set. B: allow as per-link weights. | A. Without distance the two weights have no length meaning. |
 | 5 | Test runs | The four above, or another set. | The four above. |
+| 6 | Length fields for the existing weights | A: add `L_z` and `L_r` beside `alpha_z` and `alpha_r`, linked the same way. B: only the two new weights get lengths. | A, so every smoothness setting reads the same way. |
+| 7 | What `alpha_s` changes | A: hold the lengths, recompute the alphas. B: hold the alphas, recompute the lengths. | A. The lengths are the geological choice; `alpha_s` sets how strongly the model is held to the reference. |
 
 ## Work
 
 - `simpeg/regularization/regularization_mesh_lateral.py`: build the lateral operator from an explicit edge list with a weight per edge (the inline chain plus otherline Delaunay edges), alongside #28's simplex-mesh path.
-- `simpeg/electromagnetics/utils/static_instrument/base.py`: the two options, the checks in section 3, the link classification from the `Line` column and along-line distance, and the lengths in the run report.
-- Tests: link classification on two parallel lines and on a line with a tie crossing (the crossing must not break either line's chain), chords left out on a curving line, the two weights applied to the right links, `alpha_r_otherline = 0` giving the same model as inverting the lines separately with the same β, and #28 behavior when both options are unset.
+- `simpeg/electromagnetics/utils/static_instrument/base.py`: the new alphas and lengths, resolving each pair as in section 2, the checks in section 3, the link classification from the `Line` column and along-line distance, every alpha with its length in the run report, and the schema annotation linking each length to its alpha and `alpha_s`.
+- Ymerflow, process editor forms: apply the annotation, so editing a length or its alpha rewrites the other from the form's current `alpha_s`, and a change of `alpha_s` rewrites the alphas.
+- Tests: link classification on two parallel lines and on a line with a tie crossing (the crossing must not break either line's chain), chords left out on a curving line, the two weights applied to the right links, `alpha_r_otherline = 0` giving the same model as inverting the lines separately with the same β, #28 behavior when both options are unset, and each way of resolving a pair, including the error when both are given and disagree. In Ymerflow, a form test for both directions of the link and for an `alpha_s` change.
 
-Rough size: a day and a half on top of #28.
+Rough size: two days in simpeg on top of #28, and half a day in Ymerflow.
