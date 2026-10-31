@@ -45,7 +45,13 @@ How a run resolves a pair:
 
 When `alpha_s` changes, the lengths are held and the alphas recomputed, since the length scales are the geological choice (decision 7). The run report prints every alpha with its length, in meters or feet.
 
-In the platform's process editor the two fields of a pair are linked: editing a length rewrites its alpha, and editing an alpha rewrites its length, using the form's current `alpha_s`. The schema carries the link as an annotation on the length field, naming its alpha and `alpha_s`, so the Ymerflow form editor can apply it to any pair without knowing about inversion.
+In the platform's process editor the two fields of a pair are linked: editing a length rewrites its alpha, and editing an alpha rewrites its length, using the form's current `alpha_s`. The schema carries the link as an annotation on the length field, naming its alpha and `alpha_s` as sibling fields in the same object, so the Ymerflow form editor can apply it to any pair without knowing about inversion:
+
+```json
+"L_inline": {"type": "number", "x-length-scale": {"alpha": "alpha_r_inline", "alpha_s": "alpha_s"}}
+```
+
+The relation is always alpha = alpha_s L^2.
 
 Alphas for a given length scale, at `alpha_s` = 1e-4, and the resulting pull from neighboring lines 1.9 km away:
 
