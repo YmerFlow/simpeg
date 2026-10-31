@@ -1,6 +1,6 @@
 # Lateral smoothing along a line and between lines
 
-**State:** draft 2026-10-31, decisions open
+**State:** decided 2026-10-31, ready to build after #28
 **Labels:** enhancement, inversion
 **Builds on:** #28 (distance-weighted lateral and vertical smoothness)
 
@@ -96,9 +96,9 @@ Measured for each: misfit per line, iterations, wall time, and the difference in
 
 ## Decisions
 
-| # | Question | Options | Recommendation |
+| # | Question | Options | Decision (2026-10-31) |
 |---|---|---|---|
-| 1 | Parameter form | A: alphas only, with the lengths printed. B: lengths only. C: both, each updating the other. | Decided 2026-10-31: C (section 2). |
+| 1 | Parameter form | A: alphas only, with the lengths printed. B: lengths only. C: both, each updating the other. | C (section 2). |
 | 2 | Same-line Delaunay chords | A: leave them out; the inline chain replaces them. B: keep them as inline links. | A. Chords tie a curving line's soundings across the bend. |
 | 3 | Behavior with both new options unset | A: #28 unchanged. B: always use the inline chain and otherline links. | A, so existing runs reproduce. |
 | 4 | Distance weighting off | A: error if either new option is set. B: allow as per-link weights. | A. Without distance the two weights have no length meaning. |
