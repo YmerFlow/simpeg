@@ -80,11 +80,12 @@ class MisfitDrivenBetaSchedule(InversionDirective):
     @property
     def target(self):
         """The target data misfit, read from the ``TargetMisfit`` directive in
-        the same list, or half the data count when there is none."""
+        the same list, or the data count when there is none (phi_d is the sum
+        of squared weighted residuals, with no factor 1/2, as in TargetMisfit)."""
         for directive in self.inversion.directiveList.dList:
             if isinstance(directive, TargetMisfit):
                 return directive.target
-        return 0.5 * sum(survey.nD for survey in self.survey)
+        return sum(survey.nD for survey in self.survey)
 
     @property
     def beta_floor(self):
@@ -100,6 +101,8 @@ class MisfitDrivenBetaSchedule(InversionDirective):
         if phi_d <= target:
             # TargetMisfit stops the run on this same iteration. Nothing to cool.
             self._record(phi_d, math.nan, beta, beta, "target")
+            print("MisfitDrivenBetaSchedule it=%d phi_d=%.4g target=%.4g: target reached, beta held at %.3g"
+                  % (self.opt.iter, phi_d, target, beta))
             self._phi_d_prev = phi_d
             return
 
@@ -174,3 +177,22 @@ def _is_positive(value):
         return value is not None and float(value) > 0 and math.isfinite(float(value))
     except (TypeError, ValueError):
         return False
+
+
+class TargetMisfitInUse(TargetMisfit):
+    """``TargetMisfit`` whose data count is the data in use.
+
+    phi_d sums squared weighted residuals over the data with a nonzero weight;
+    a gate with no datum or no error has weight 0. ``TargetMisfit`` counts every
+    datum (``survey.nD``), so with empty gates it stopped a run at an RMS of
+    sqrt(nD / in use) on the gates in use instead of 1 (ymerflow-business#132).
+    The count is taken at ``initialize`` from the weights phi_d uses.
+    """
+
+    def initialize(self):
+        dmisfits = getattr(self.invProb.dmisfit, "objfcts", [self.invProb.dmisfit])
+        weights = np.concatenate([dmisfit.W.diagonal() for dmisfit in dmisfits])
+        n_used = int(np.count_nonzero(weights))
+        self.phi_d_star = n_used
+        print("TargetMisfit: target phi_d %.6g = chifact %g x %d data in use (%d of %d have weight 0)"
+              % (self.target, self.chifact, n_used, weights.size - n_used, weights.size))
