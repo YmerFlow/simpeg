@@ -42,7 +42,7 @@ overridden at instantiation time.
 | `clustering__n_clusters` | `None` | Number of clusters K. `None` disables clustering. |
 | `clustering__random_seed` | `None` | Random seed for K-means reproducibility. |
 | `clustering__valid_gate_threshold` | `0.5` | Gates present in fewer than this fraction of soundings are excluded from the feature vector. |
-| `regularization__mref` | `'startmodel'` | Reference model for regularization: `'startmodel'` (cluster-derived) or `'halfspace'` (flat). |
+| `regularization__mref` | `'auto'` | Reference model for regularization: `'startmodel'` (cluster-derived) or `'halfspace'` (flat). `'auto'` is `'startmodel'` here, and `'halfspace'` with a dataset start (`sci-warm-start.md`). |
 
 All other inversion parameters for the cluster sub-inversion can be overridden with
 the `cluster_inversion__` prefix, which strips the prefix before passing them to the
@@ -115,10 +115,10 @@ block is filled from its cluster representative's inverted resistivity.
 `make_mref(thicknesses)` method is introduced that `make_regularization` delegates
 to. Controlled by `regularization__mref`:
 
-- `'startmodel'` (default): `mref` = cluster-derived start model, regularising the
-  full inversion toward the cluster solution.
+- `'startmodel'` (default, through `'auto'`): `mref` = cluster-derived start model,
+  regularizing the full inversion toward the cluster solution.
 - `'halfspace'`: `mref` = flat halfspace at `startmodel__res`, matching current
-  behaviour.
+  behavior.
 
 ## Cluster ID Output
 
