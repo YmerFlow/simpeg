@@ -578,7 +578,8 @@ class XYZSystem(object):
         ``clustering__enabled``, else the halfspace at ``startmodel__res``; then the
         optional ``startmodel__lateral_median``.
         """
-        if self.startmodel__dataset is not None:
+        # An empty list, as a form sends for an untouched field, is a cold start.
+        if self.startmodel__dataset:
             startmodel = self._dataset_startmodel(thicknesses)
         elif self.clustering__enabled:
             startmodel = self._clustered_startmodel(thicknesses)
@@ -731,7 +732,7 @@ class XYZSystem(object):
         """Return the reference model for regularization."""
         mref = self.regularization__mref
         if mref == 'auto':
-            mref = 'halfspace' if self.startmodel__dataset is not None else 'startmodel'
+            mref = 'halfspace' if self.startmodel__dataset else 'startmodel'
         if mref == 'halfspace':
             return self._halfspace_startmodel(thicknesses)
         return self.make_startmodel(thicknesses)
@@ -891,7 +892,7 @@ class XYZSystem(object):
         if self.directives__beta__beta0 is not None:
             print("Starting beta %.4g (directives__beta__beta0)" % self.directives__beta__beta0)
             return float(self.directives__beta__beta0)
-        if self.startmodel__dataset is None:
+        if not self.startmodel__dataset:
             return None
         recorded = [float(m.model_info["final_beta"]) for m in self._start_models()
                     if "final_beta" in m.model_info]

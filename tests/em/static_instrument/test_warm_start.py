@@ -157,6 +157,14 @@ def test_a_failed_model_sounding_is_not_used():
     assert s.startmodel_report["startmodel_by_id"] == N - 1
 
 
+def test_an_empty_list_is_a_cold_start():
+    """What a form sends for the field left empty."""
+    s = system(startmodel__dataset=[], startmodel__res=33.0)
+    np.testing.assert_allclose(start_res(s), 33.0)
+    assert not hasattr(s, "startmodel_report")
+    assert isinstance(s.make_directives()[0], base.directives.BetaEstimate_ByEig)
+
+
 def test_several_start_models_are_combined():
     s = system(startmodel__dataset=[start_model(lines=[1]), start_model(lines=[2, 3])])
     np.testing.assert_allclose(start_res(s), model_res(soundings()))
