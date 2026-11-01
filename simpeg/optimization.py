@@ -892,9 +892,10 @@ class ProjectedGradient(Minimize, Remember):
             operator = sp.linalg.LinearOperator(
                 (shape[1], shape[1]), reduceHess, dtype=self.xc.dtype
             )
-            p, info = sp.linalg.cg(
-                operator, -Z.T * self.g, tol=self.tolCG, maxiter=self.maxIterCG
-            )
+            # Through SolverICG, which passes the tolerance under the name the installed
+            # SciPy's cg takes (tol, or rtol from 1.12; tol= raises from 1.14).
+            Hinv = SolverICG(operator, tol=self.tolCG, maxiter=self.maxIterCG)
+            p = Hinv * (-Z.T * self.g)
             p = Z * p  # bring up to full size
             # aSet_after = self.activeSet(self.xc+p)
         return p
