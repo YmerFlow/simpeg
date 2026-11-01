@@ -166,6 +166,12 @@ def SolverWrapI(fun, checkAccuracy=True, accuracyTol=1e-5, name=None):
     Solver
         A new solver class created from the function.
 
+    Notes
+    -----
+    Keywords the function doesn't take are dropped with a warning, except the relative
+    tolerance: ``tol`` is passed as ``rtol`` to a function that takes ``rtol`` (SciPy's
+    iterative solvers from 1.12 on), and ``rtol`` as ``tol`` to one that only takes ``tol``.
+
     Examples
     --------
 
@@ -190,6 +196,13 @@ def SolverWrapI(fun, checkAccuracy=True, accuracyTol=1e-5, name=None):
         self.accuracyTol = kwargs.pop("accuracyTol", accuracyTol)
 
         func_params = inspect.signature(fun).parameters
+        # SciPy renamed the relative tolerance of its iterative solvers from tol to rtol
+        # (deprecated in 1.12, removed in 1.14). Pass it under the name fun takes, so the
+        # culling below doesn't drop it and leave the solver at its default tolerance.
+        if "tol" in kwargs and "rtol" in func_params and "rtol" not in kwargs:
+            kwargs["rtol"] = kwargs.pop("tol")
+        elif "rtol" in kwargs and "rtol" not in func_params and "tol" in func_params:
+            kwargs["tol"] = kwargs.pop("rtol")
         # First test if function excepts **kwargs,
         # in which case we do not need to cull the kwargs
         do_cull = True
