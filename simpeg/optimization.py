@@ -382,6 +382,15 @@ class Minimize(object):
             self.f, self.g, self.H = evalFunction(self.xc, return_g=True, return_H=True)
             self.printIter()
             if self.stoppingCriteria():
+                print(
+                    "Optimizer stopping at iteration %d: %s"
+                    % (
+                        self.iter,
+                        "maxIter = %d reached" % self.maxIter
+                        if self.iter >= self.maxIter
+                        else "its convergence criteria are met (STOP block below)",
+                    )
+                )
                 break
             self.searchDirection = self.findSearchDirection()
             del (
@@ -392,9 +401,19 @@ class Minimize(object):
             if not passLS:
                 xt, caught = self.modifySearchDirectionBreak(p)
                 if not caught:
+                    print(
+                        "Optimizer stopping at iteration %d: the line search found no step "
+                        "that lowers the objective in %d tries (f = %.4e)"
+                        % (self.iter, self.maxIterLS, self.f)
+                    )
                     return self.xc
             self.doEndIteration(xt)
             if self.stopNextIteration:
+                # The directive that asked has printed its own line with its numbers.
+                print(
+                    "Optimizer stopping at iteration %d: a directive asked it to stop"
+                    % self.iter
+                )
                 break
 
         self.printDone()
