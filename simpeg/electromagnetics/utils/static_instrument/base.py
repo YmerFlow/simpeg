@@ -29,10 +29,12 @@ from simpeg.electromagnetics.utils.em1d_utils import get_vertical_discretization
 from simpeg.regularization import LaterallyConstrained
 
 from .thickness import build_log_spaced_layer_thick
-from .schedules import MisfitDrivenBetaSchedule
+from .schedules import MisfitDrivenBetaSchedule, RecordBeta, StartingBeta
 from .smoothness import (
     crs_unit, inline_links, length_scale_of, otherline_links, resolve_pair)
-from .utils import detect_cpu_availability
+from .utils import (detect_cpu_availability, describe_layers, lateral_median, layer_tops,
+                    load_start_models, match_soundings, median_line_spacing,
+                    sounding_keys, start_model_resistivity)
 
 import warnings
 
@@ -553,6 +555,16 @@ class XYZSystem(object):
     clustering__valid_gate_threshold = 0.5
     "Gates present in fewer than this fraction of soundings are excluded from the feature vector."
 
+    startmodel__dataset: typing.Annotated[list, {"json_schema": {"items": {
+        "type": "string", "format": "uri", "x-format": "dataset"}}}] = None
+    "Earlier inversion models to start from, for example one laterally constrained inversion per line (a path or an XYZ object, or a list of them). Each sounding takes the model sounding with the same line and sounding_id when the data and every model carry both, otherwise the nearest model sounding within startmodel__fill_distance, otherwise the usual start: the clustered start if clustering__enabled, else the halfspace at startmodel__res. There is no interpolation between model soundings. The starting beta then follows the models' recorded final_beta (directives__beta__warm_factor), and regularization__mref 'auto' becomes the halfspace. Leave empty for a cold start."
+    startmodel__fill_distance: float = None
+    "Largest distance (CRS linear unit) from a sounding to a start-model sounding for a match by position. Leave blank for 1.5 times the median line spacing, so a line with no model of its own is filled from its neighbors."
+    startmodel__resample_layers: bool = True
+    "When the start models' layers differ from this inversion's: True (default) resamples their log10 resistivity onto this inversion's layers and names both layerings in the log; False stops the run with an error."
+    startmodel__lateral_median: float = 0.
+    "Radius (CRS linear unit) of a median filter applied to the start model before the run, layer by layer, to take line-to-line differences out of it. 0 (default) is off."
+
     def _make_clusterer(self):
         return XYZClusterer(
             xyz=self.xyz,
@@ -562,9 +574,107 @@ class XYZSystem(object):
         )
 
     def make_startmodel(self, thicknesses):
-        if not self.clustering__enabled:
-            return np.log(np.ones(self.n_param(thicknesses)) * 1/self.startmodel__res)
+        """Return the start model, log conductivity [ln(S/m)], one block of layers per sounding.
 
+        From ``startmodel__dataset`` when it is set, else the clustered start when
+        ``clustering__enabled``, else the halfspace at ``startmodel__res``; then the
+        optional ``startmodel__lateral_median``.
+        """
+        # An empty list, as a form sends for an untouched field, is a cold start.
+        if self.startmodel__dataset:
+            startmodel = self._dataset_startmodel(thicknesses)
+        elif self.clustering__enabled:
+            startmodel = self._clustered_startmodel(thicknesses)
+        else:
+            startmodel = self._halfspace_startmodel(thicknesses)
+        if self.startmodel__lateral_median:
+            xyz = self.xyz
+            xy = xyz.flightlines[[xyz.x_column, xyz.y_column]].values.astype(float)
+            startmodel = lateral_median(startmodel.reshape(len(xy), -1), xy,
+                                        self.startmodel__lateral_median).ravel()
+        return startmodel
+
+    def _halfspace_startmodel(self, thicknesses):
+        """The halfspace at startmodel__res, as log conductivity [ln(S/m)]."""
+        return np.log(np.ones(self.n_param(thicknesses)) * 1/self.startmodel__res)
+
+    def _start_models(self):
+        """The models in startmodel__dataset, loaded once."""
+        if not hasattr(self, '_loaded_start_models'):
+            self._loaded_start_models = load_start_models(self.startmodel__dataset)
+        return self._loaded_start_models
+
+    def _dataset_startmodel(self, thicknesses):
+        """The start model taken sounding by sounding from startmodel__dataset [ln(S/m)].
+
+        Also sets ``startmodel_report``: how many soundings took each path, the fill
+        distance, and the layerings, which make_inversion_outputs writes into the
+        outputs' ``model_info``.
+        """
+        # Cached like the clustered start: make_mref and inv.run both ask for it.
+        if hasattr(self, '_cached_dataset_startmodel'):
+            return self._cached_dataset_startmodel
+
+        xyz = self.xyz
+        xy = xyz.flightlines[[xyz.x_column, xyz.y_column]].values.astype(float)
+        n_layers = len(thicknesses) + 1
+
+        res, xy_model, keys_model, resampled = [], [], [], []
+        for model in self._start_models():
+            model_res, layerings = start_model_resistivity(
+                model, thicknesses, resample=self.startmodel__resample_layers)
+            usable = np.isfinite(model_res).all(axis=1)
+            fl = model.flightlines[usable]
+            res.append(model_res[usable])
+            xy_model.append(fl[[model.x_column, model.y_column]].values.astype(float))
+            keys_model.append(sounding_keys(fl, model.line_id_column))
+            resampled += layerings
+        res, xy_model = np.vstack(res), np.vstack(xy_model)
+
+        keys = sounding_keys(xyz.flightlines, xyz.line_id_column)
+        if keys is None or any(k is None for k in keys_model):
+            keys = keys_model = None
+        else:
+            keys, keys_model = pd.MultiIndex.from_frame(keys), pd.MultiIndex.from_frame(pd.concat(keys_model))
+
+        fill = self.startmodel__fill_distance
+        if fill is None:
+            line = xyz.flightlines[xyz.line_id_column].values if xyz.line_id_column else np.zeros(len(xy))
+            spacing = median_line_spacing(xy, line)
+            if not np.isfinite(spacing):   # one line: fill gaps along it instead
+                spacing = np.median(cKDTree(xy).query(xy, k=2)[0][:, 1])
+            fill = 1.5 * spacing
+
+        index, by_id = match_soundings(xy, xy_model, fill, keys, keys_model)
+        matched = index >= 0
+        startmodel = np.empty((len(xy), n_layers))
+        startmodel[matched] = np.log(1 / res[index[matched]])
+        fallback = "clustered start" if self.clustering__enabled else "halfspace"
+        if not matched.all():
+            rest = (self._clustered_startmodel(thicknesses) if self.clustering__enabled
+                    else self._halfspace_startmodel(thicknesses))
+            startmodel[~matched] = rest.reshape(len(xy), n_layers)[~matched]
+
+        target = describe_layers(layer_tops(thicknesses))
+        layers = ("resampled onto %s from %s" % (target, "; ".join(dict.fromkeys(resampled)))
+                  if resampled else "the inversion's own, %s" % target)
+        self.startmodel_report = {
+            "startmodel_by_id": int(by_id.sum()),
+            "startmodel_by_position": int((matched & ~by_id).sum()),
+            "startmodel_by_fallback": int((~matched).sum()),
+            "startmodel_fallback": fallback,
+            "startmodel_fill_distance": float(fill),
+            "startmodel_layers": layers,
+        }
+        print("Warm start: %d soundings matched by id, %d by position (fill distance %.4g), "
+              "%d from the %s; layers: %s"
+              % (by_id.sum(), (matched & ~by_id).sum(), fill, (~matched).sum(), fallback, layers))
+
+        self._cached_dataset_startmodel = startmodel.ravel()
+        return self._cached_dataset_startmodel
+
+    def _clustered_startmodel(self, thicknesses):
+        """The clustered start model [ln(S/m)]: each sounding takes its cluster medoid's inverted model."""
         # Cached: make_regularization → make_mref → make_startmodel triggers the cluster
         # inversion; inv.run(make_startmodel(...)) then returns the same array cheaply.
         if hasattr(self, '_cached_cluster_startmodel'):
@@ -598,6 +708,8 @@ class XYZSystem(object):
             if not (key.startswith('clustering__') or key.startswith('cluster_inversion__'))
         }
         cluster_opts['clustering__enabled'] = False  # prevent recursion
+        cluster_opts['startmodel__dataset'] = None   # the medoids start cold
+        cluster_opts['startmodel__lateral_median'] = 0
         cluster_opts['validate'] = False
         cluster_opts['regularization__alpha_r'] = 0
         # No lateral links between medoids: drop a lateral length or line split the parent
@@ -619,13 +731,16 @@ class XYZSystem(object):
         self._cached_cluster_startmodel = startmodel
         return startmodel
 
-    regularization__mref = 'startmodel'
-    "Reference model for regularization: 'startmodel' (default) uses the cluster-derived start model; 'halfspace' uses a flat halfspace at startmodel__res."
+    regularization__mref: typing.Literal['auto', 'startmodel', 'halfspace'] = 'auto'
+    "Reference model for regularization: 'startmodel' uses the start model (the cluster-derived one when clustering is on); 'halfspace' uses a flat halfspace at startmodel__res. 'auto' (default) is 'halfspace' when starting from startmodel__dataset, so the smallness term does not pull the result back toward the earlier models, and 'startmodel' otherwise."
 
     def make_mref(self, thicknesses):
         """Return the reference model for regularization."""
-        if self.regularization__mref == 'halfspace':
-            return np.log(np.ones(self.n_param(thicknesses)) * 1/self.startmodel__res)
+        mref = self.regularization__mref
+        if mref == 'auto':
+            mref = 'halfspace' if self.startmodel__dataset else 'startmodel'
+        if mref == 'halfspace':
+            return self._halfspace_startmodel(thicknesses)
         return self.make_startmodel(thicknesses)
 
     # FIXME!!! Should alpha_s's default be set to something based off the model domain?
@@ -926,6 +1041,10 @@ class XYZSystem(object):
     "Random seed for the beta estimator. Fixed value ensures reproducible results across runs with identical parameters. Change to any integer for a different (but still reproducible) initialization, or clear to use a random seed each run."
     directives__beta__beta0_ratio : float = 10.
     "Initial regularization strength as a multiple of the estimated optimal beta. Higher values (10–100) start with a heavily smoothed model and relax regularization gradually — this is the standard Tikhonov approach and typically converges in 20–30 iterations. Values near 1 give the data too much control immediately, leading to slow or erratic convergence. Recommended: 10–50."
+    directives__beta__beta0 : float = None
+    "Starting beta, used as given in place of an estimate. Leave blank (default) to estimate it: beta0_ratio times the eigenvalue estimate on a cold start, warm_factor times the start models' recorded final_beta on a warm start."
+    directives__beta__warm_factor : float = 3.
+    "Warm start only (startmodel__dataset): the starting beta is this factor times the final_beta the start models recorded (their median, when there are several). Above 1 it gives the regularization room to reshape the start, for example to remove line-to-line differences, before beta cools again; too high and the first iterations smooth away the fit the start brought. If no start model records final_beta, beta is estimated from beta0_ratio instead and the log says so."
     directives__beta__schedule : typing.Literal['fixed', 'misfit'] = 'fixed'
     "How the regularization weight (beta) is reduced between Gauss-Newton iterations. 'fixed': divide by cooling_factor every cooling_rate iterations regardless of progress (the classic schedule). 'misfit': hold beta while the data misfit is still improving by more than progress_threshold per iteration, cool when it plateaus by cooling_factor (optionally scaled by the misfit ratio, see ratio_cap), never below beta_min_ratio times the starting beta, and stop when stall_iterations iterations of cooling improved the misfit by less than stall_progress. 'misfit' typically reaches the target in fewer iterations and stops cleanly when the data cannot be fit instead of running to max_iter."
     directives__beta__cooling_factor : float = 2.
@@ -954,8 +1073,30 @@ class XYZSystem(object):
     "IRLS convergence tolerance — minimum fractional change in the objective function between iterations. Smaller values require tighter convergence before stopping."
     directives__irls__coolingRate = 1
     "Number of IRLS iterations between each update of the IRLS reweighting factors. Default 1 updates every iteration."
+    def _starting_beta(self):
+        """The starting beta when it is not to be estimated, else None (see directives__beta__beta0)."""
+        if self.directives__beta__beta0 is not None:
+            print("Starting beta %.4g (directives__beta__beta0)" % self.directives__beta__beta0)
+            return float(self.directives__beta__beta0)
+        if not self.startmodel__dataset:
+            return None
+        recorded = [float(m.model_info["final_beta"]) for m in self._start_models()
+                    if "final_beta" in m.model_info]
+        recorded = [beta for beta in recorded if np.isfinite(beta) and beta > 0]
+        if not recorded:
+            print("Warm start: no start model records final_beta; "
+                  "estimating the starting beta from directives__beta__beta0_ratio")
+            return None
+        beta0 = self.directives__beta__warm_factor * float(np.median(recorded))
+        print("Warm start: starting beta %.4g = warm_factor %g x final_beta %.4g (median of %d start model(s))"
+              % (beta0, self.directives__beta__warm_factor, np.median(recorded), len(recorded)))
+        return beta0
+
     def make_directives(self):
-        if self.directives__beta__seed:
+        beta0 = self._starting_beta()
+        if beta0 is not None:
+            BetaEstimate = StartingBeta(beta0)
+        elif self.directives__beta__seed:
             BetaEstimate = directives.BetaEstimate_ByEig(beta0_ratio=self.directives__beta__beta0_ratio, 
                                                          seed=self.directives__beta__seed)
             print('setting manual random seed for repeatabillity')
@@ -988,6 +1129,10 @@ class XYZSystem(object):
                     coolingRate = self.directives__irls__coolingRate))
             dirs.append(directives.UpdatePreconditioner())
 
+        # After every directive that changes beta, so it sees the value each
+        # iteration was solved with; make_inversion_outputs writes it as final_beta.
+        self._beta_recorder = RecordBeta()
+        dirs.append(self._beta_recorder)
         return dirs
         
     optimizer__max_iter=50
@@ -1122,6 +1267,19 @@ class XYZSystem(object):
                 if obj is not None:
                     obj.flightlines = obj.flightlines.copy()
                     obj.flightlines['cluster_id'] = cluster_id_full.values
+
+        # final_beta is what a later warm start from these outputs reads back;
+        # startmodel_report says how this run's own start was made.
+        info = dict(getattr(self, 'startmodel_report', {}))
+        recorder = getattr(self, '_beta_recorder', None)
+        final_beta = recorder.beta if recorder is not None else None
+        if final_beta is None:   # no iteration recorded
+            final_beta = getattr(self.inv.invProb, "beta", None)
+        if final_beta is not None:
+            info["final_beta"] = float(final_beta)
+        for obj in [self.sparse, self.l2, self.l2pred, self.sparsepred, self.corrected]:
+            if obj is not None:
+                obj.model_info.update(info)
 
     def _copy_misfit(self, pred, model):
         """Put the misfit computed for a predicted-data set onto the model it belongs to.
