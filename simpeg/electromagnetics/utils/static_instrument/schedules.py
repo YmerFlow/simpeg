@@ -169,6 +169,46 @@ class MisfitDrivenBetaSchedule(InversionDirective):
         })
 
 
+class StartingBeta(InversionDirective):
+    """Start beta at a given value instead of estimating it.
+
+    Takes the place of ``BetaEstimate_ByEig`` at the head of the directive list, so a
+    schedule after it reads this value as its starting beta.
+
+    Parameters
+    ----------
+    beta0 : float
+        The starting beta.
+    """
+
+    def __init__(self, beta0, **kwargs):
+        super().__init__(**kwargs)
+        self.beta0 = float(beta0)
+
+    def initialize(self):
+        self.invProb.beta = self.beta0
+
+
+class RecordBeta(InversionDirective):
+    """Keep the beta the most recent Gauss-Newton iteration was solved with, as :attr:`beta`.
+
+    Place it last in the directive list. Schedules lower beta in ``endIter``, after the
+    iteration has been solved, so ``invProb.beta`` at the end of a run can already be the
+    value for an iteration that never ran. This directive notes beta after every other
+    directive has had its say, which is the value the next iteration uses.
+    """
+
+    beta = None
+
+    def initialize(self):
+        self.beta = None
+        self._next = float(self.invProb.beta)
+
+    def endIter(self):
+        self.beta = self._next
+        self._next = float(self.invProb.beta)
+
+
 def _is_positive(value):
     try:
         return value is not None and float(value) > 0 and math.isfinite(float(value))
