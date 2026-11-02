@@ -56,6 +56,7 @@ import re
 import typing
 
 from . import xyzfilter
+from .schedules import TargetMisfitInUse
 
 
 class XYZClusterer:
@@ -1116,7 +1117,7 @@ class XYZSystem(object):
         dirs = [
             BetaEstimate,
             schedule,
-            simpeg.directives.TargetMisfit()]
+            TargetMisfitInUse()]
 
         #            directives.SaveOutputEveryIteration(save_txt=False),
         if self.directives__irls__enable:
