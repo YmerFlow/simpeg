@@ -1,6 +1,6 @@
 # Lateral smoothing along a line and between lines
 
-**State:** decided 2026-10-31, ready to build after #28
+**State:** decided 2026-10-31; schema shape revised 2026-11-02 (group-object `x-format`, see section 2), decisions 1 and 8 open
 **Labels:** enhancement, inversion
 **Builds on:** #28 (distance-weighted lateral and vertical smoothness)
 
@@ -45,13 +45,27 @@ How a run resolves a pair:
 
 When `alpha_s` changes, the lengths are held and the alphas recomputed, since the length scales are the geological choice (decision 7). The run report prints every alpha with its length, in meters or feet.
 
-In the platform's process editor the two fields of a pair are linked: editing a length rewrites its alpha, and editing an alpha rewrites its length, using the form's current `alpha_s`. The schema carries the link as an annotation on the length field, naming its alpha and `alpha_s` as sibling fields in the same object, so the Ymerflow form editor can apply it to any pair without knowing about inversion:
+In the platform's process editor the alphas and lengths are linked: editing a length rewrites its alpha, editing an alpha rewrites its length, and changing `alpha_s` rewrites the alphas, all using the form's current `alpha_s`. The relation is always alpha = alpha_s L^2.
+
+The schema carries this as a single `x-format` annotation on the enclosing **group object**, the way every other custom widget in Ymerflow is declared (a leaf's `x-format` picks its widget in `CustomStringField` — `dataset`, `upload`, `datasetPath` — and an `anyOf`'s picks `ExpressionField`). The smoothness parameters already form a group object: swaggerspect turns the flattened `regularization__*` attributes into a `regularization` object (`deps/swaggerspect/swaggerspect/__init__.py`, `_group_parameters`). That object carries the format, and a single length-scale widget renders its members together and keeps them in sync:
 
 ```json
-"L_inline": {"type": "number", "x-length-scale": {"alpha": "alpha_r_inline", "alpha_s": "alpha_s"}}
+"regularization": {
+  "type": "object",
+  "x-format": "length-scale",
+  "properties": {
+    "alpha_s":           {"type": "number"},
+    "alpha_z":           {"type": "number"},
+    "alpha_r":           {"type": "number"},
+    "alpha_r_inline":    {"type": "number"},
+    "alpha_r_otherline": {"type": "number"}
+  }
+}
 ```
 
-The relation is always alpha = alpha_s L^2.
+The widget owns the whole group, so no field refers to another by name and nothing outside the group is touched. On the frontend this is one object-level dispatch (`if (schema['x-format'] === 'length-scale')`) returning a self-contained widget, mirroring `CustomStringField`; it does **not** wrap the generic `ObjectField` or inspect sibling keys.
+
+Enabling work: `_group_parameters` synthesizes the `regularization` object itself and today preserves annotations only on leaf fields, not on the group it builds — which is why a per-leaf annotation was the only shape that survived. swaggerspect needs a small extension so a flattened group can carry group-level schema keys (e.g. `x-format`); how a Python class declares them on a synthesized group is an open sub-question (decision 8). Whether the length scales (`L_*`) are members of this group and submitted, or derived in the widget and never stored, is decision 1 (reopened below).
 
 Alphas for a given length scale, at `alpha_s` = 1e-4, and the resulting pull from neighboring lines 1.9 km away:
 
@@ -102,21 +116,23 @@ Measured for each: misfit per line, iterations, wall time, and the difference in
 
 ## Decisions
 
-| # | Question | Options | Decision (2026-10-31) |
+| # | Question | Options | Decision |
 |---|---|---|---|
-| 1 | Parameter form | A: alphas only, with the lengths printed. B: lengths only. C: both, each updating the other. | C (section 2). |
+| 1 | Parameter form (source of truth) | A: alphas only in the schema, lengths derived in the widget and only printed in the report. B: lengths only. C: both `alpha_*` and `L_*` are schema members and submitted, each updating the other, backend resolves pairs. | **Reopened 2026-11-02.** Was C (2026-10-31). The group-widget convention makes A clean (no `L_*` params, no pair-resolution, no disagreement error, section 2/3 run-resolution text drops); C keeps lengths usable by non-form callers (MCP/CLI) at the cost of a dual source of truth. To settle. |
 | 2 | Same-line Delaunay chords | A: leave them out; the inline chain replaces them. B: keep them as inline links. | A. Chords tie a curving line's soundings across the bend. |
 | 3 | Behavior with both new options unset | A: #28 unchanged. B: always use the inline chain and otherline links. | A, so existing runs reproduce. |
 | 4 | Distance weighting off | A: error if either new option is set. B: allow as per-link weights. | A. Without distance the two weights have no length meaning. |
 | 5 | Test runs | The four above, or another set. | The four above. |
 | 6 | Length fields for the existing weights | A: add `L_z` and `L_r` beside `alpha_z` and `alpha_r`, linked the same way. B: only the two new weights get lengths. | A, so every smoothness setting reads the same way. |
 | 7 | What `alpha_s` changes | A: hold the lengths, recompute the alphas. B: hold the alphas, recompute the lengths. | A. The lengths are the geological choice; `alpha_s` sets how strongly the model is held to the reference. |
+| 8 | How a flattened group declares a group-level `x-format` | A: extend `_group_parameters` to merge group-level keys a class supplies (e.g. a `regularization = {"x-format": ...}` marker). B: a dedicated sub-group object. C: other. | **Open 2026-11-02.** swaggerspect currently preserves annotations only on leaf fields; the group object is synthesized, so object-level `x-format` needs a new hook. To settle. |
 
 ## Work
 
 - `simpeg/regularization/regularization_mesh_lateral.py`: build the lateral operator from an explicit edge list with a weight per edge (the inline chain plus otherline Delaunay edges), alongside #28's simplex-mesh path.
-- `simpeg/electromagnetics/utils/static_instrument/base.py`: the new alphas and lengths, resolving each pair as in section 2, the checks in section 3, the link classification from the `Line` column and along-line distance, every alpha with its length in the run report, and the schema annotation linking each length to its alpha and `alpha_s`.
-- Ymerflow, process editor forms: apply the annotation, so editing a length or its alpha rewrites the other from the form's current `alpha_s`, and a change of `alpha_s` rewrites the alphas.
+- `simpeg/electromagnetics/utils/static_instrument/base.py`: the new alphas (and, if decision 1 lands on C, the lengths, resolving each pair as in section 2 with the section 3 checks), the link classification from the `Line` column and along-line distance, every alpha with its length in the run report, and marking the `regularization` group with `x-format: "length-scale"` via the swaggerspect hook from decision 8.
+- `deps/swaggerspect`: extend `_group_parameters` so a flattened group can carry group-level schema keys (decision 8); today it only preserves leaf-field annotations.
+- Ymerflow, process editor forms: a single object-level dispatch (`x-format === 'length-scale'`) returning a self-contained length-scale widget — matching how `CustomStringField` dispatches `dataset`/`upload`. The widget renders `alpha_s` and the alpha/length pairs together and keeps them in sync internally. It must **not** override the generic `ObjectField` to inspect sibling keys (this is the PR #138 correction).
 - Tests: link classification on two parallel lines and on a line with a tie crossing (the crossing must not break either line's chain), chords left out on a curving line, the two weights applied to the right links, `alpha_r_otherline = 0` giving the same model as inverting the lines separately with the same β, #28 behavior when both options are unset, and each way of resolving a pair, including the error when both are given and disagree. In Ymerflow, a form test for both directions of the link and for an `alpha_s` change.
 
 Rough size: two days in simpeg on top of #28, and half a day in Ymerflow.
