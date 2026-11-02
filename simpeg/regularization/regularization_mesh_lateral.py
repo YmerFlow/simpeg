@@ -13,16 +13,76 @@ class LCRegularizationMesh(RegularizationMesh):
     :param list mesh: lit including two discretize meshes
     :param numpy.ndarray active_cells: bool array, size nC, that is True where we have active cells. Used to reduce the operators so we regularize only on active cells
     :param numpy.ndarray active_edges: bool array, size nE, that is True where we have active edges. Used to reduce the operators so we regularize only on active edges
+    :param bool distance_weighted: if True, the lateral gradient divides each model
+        difference by the length of its triangulation edge, and the vertical gradient
+        by the distance between layer centres, so smoothness is a true gradient in
+        metres and ``alpha_r`` / ``alpha_z`` relate to length scales
+        (``L = sqrt(alpha / alpha_s)``). If False (the default, and the historical
+        behaviour), every lateral link and every layer interface is a plain
+        difference: ``alpha_r`` and ``alpha_z`` are then per-link and per-layer
+        weights, not length scales, and a link between lines kilometres apart weighs
+        the same as one between neighbouring soundings (ymerflow-business#119).
+    :param numpy.ndarray locations: optional (n_nodes, 2) sounding coordinates used for
+        the edge lengths when ``distance_weighted`` is True. Defaults to the lateral
+        mesh's own nodes. Pass the true positions when the mesh was built from
+        jittered ones (as for a single straight flight line).
 
     """
 
     _active_edges = None
 
-    def __init__(self, mesh, active_cells=None, active_edges=None, **kwargs):
+    def __init__(
+        self,
+        mesh,
+        active_cells=None,
+        active_edges=None,
+        distance_weighted=False,
+        locations=None,
+        **kwargs,
+    ):
         self.mesh_radial = mesh[0]
         self.mesh_vertical = mesh[1]
         self.active_edges = active_edges
+        self.locations = locations
+        self.distance_weighted = distance_weighted
         utils.set_kwargs(self, **kwargs)
+
+    @property
+    def distance_weighted(self) -> bool:
+        """Whether gradients are divided by real distances (see class docstring)."""
+        return self._distance_weighted
+
+    @distance_weighted.setter
+    def distance_weighted(self, value: bool):
+        self._distance_weighted = bool(value)
+        # Operators depend on the setting; drop any cached ones.
+        self._cell_gradient_r = None
+        self._cell_gradient_z = None
+        self._cell_distances_r = None
+        self._cell_distances_z = None
+
+    @property
+    def edge_lengths(self) -> np.ndarray:
+        """Length of each lateral (triangulation) edge, in the units of the locations.
+
+        Returns
+        -------
+        (n_edges, ) numpy.ndarray
+        """
+        if getattr(self, "_edge_lengths", None) is None:
+            xy = self.mesh_radial.nodes if self.locations is None else self.locations
+            xy = np.asarray(xy, dtype=float)
+            if xy.shape[0] != self.n_nodes:
+                raise ValueError(
+                    f"locations has {xy.shape[0]} rows; the lateral mesh has "
+                    f"{self.n_nodes} nodes"
+                )
+            edges = self.mesh_radial._edges
+            lengths = np.linalg.norm(xy[edges[:, 1]] - xy[edges[:, 0]], axis=1)
+            if np.any(lengths <= 0):
+                raise ValueError("lateral mesh has a zero-length edge (duplicate sounding positions)")
+            self._edge_lengths = lengths
+        return self._edge_lengths
 
     @property
     def active_cells(self) -> np.ndarray:
@@ -174,6 +234,8 @@ class LCRegularizationMesh(RegularizationMesh):
         """
         if getattr(self, "_cell_gradient_r", None) is None:
             grad = self.nodal_gradient_stencil
+            if self.distance_weighted:
+                grad = utils.sdiag(1.0 / self.edge_lengths) @ grad
             self._cell_gradient_r = (
                 self.Paer.T * sp.kron(grad, utils.speye(self.nz)) * self.Pac
             )
@@ -200,8 +262,14 @@ class LCRegularizationMesh(RegularizationMesh):
             Cell center distance array along the r-direction.
         """
         if getattr(self, "_cell_distances_r", None) is None:
-            Ave = self.aveCC2Fr
-            self._cell_distances_r = Ave * (self.Pac.T * self.h_gridded_r)
+            if self.distance_weighted:
+                # One distance per (edge, layer) row, in the cell_gradient_r ordering.
+                self._cell_distances_r = self.Paer.T @ np.repeat(
+                    self.edge_lengths, self.nz
+                )
+            else:
+                Ave = self.aveCC2Fr
+                self._cell_distances_r = Ave * (self.Pac.T * self.h_gridded_r)
         return self._cell_distances_r
 
     @property
@@ -211,7 +279,12 @@ class LCRegularizationMesh(RegularizationMesh):
 
         """
         if getattr(self, "_cell_gradient_z", None) is None:
-            grad = self.mesh_vertical.stencil_cell_gradient
+            if self.distance_weighted:
+                # discretize's cell_gradient divides by the distance between layer
+                # centres; same sparsity and zero boundary rows as the stencil.
+                grad = self.mesh_vertical.cell_gradient
+            else:
+                grad = self.mesh_vertical.stencil_cell_gradient
             self._cell_gradient_z = (
                 self.Pafz.T * sp.kron(utils.speye(self.n_nodes), grad) * self.Pac
             )
@@ -240,7 +313,9 @@ class LCRegularizationMesh(RegularizationMesh):
             Cell center distance array along the r-direction.
         """
         if getattr(self, "_cell_distances_z", None) is None:
-            Ave = self.aveCC2Fr
+            # Was self.aveCC2Fr (the radial operator), which has the wrong shape for
+            # z faces; the vertical average is aveCC2Fz.
+            Ave = self.aveCC2Fz
             self._cell_distances_z = Ave * (self.Pac.T * self.h_gridded_z)
         return self._cell_distances_z
 
