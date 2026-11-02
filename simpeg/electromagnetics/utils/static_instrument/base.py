@@ -333,11 +333,27 @@ class XYZSystem(object):
     def gate_filter(self):
         filt = {}
         for key in self._xyz.layer_data.keys():
-            match = re.match(r"^[^0-9]*([0-9]+).*", key)
-            if match is None: continue
-            channel = int(match.groups()[0]) - 1
+            # Identify the channel from the ``ch<N>`` token, not the first run of
+            # digits in the key. An array named for a component the instrument
+            # description omits has digits that are not a channel number; handing
+            # it another channel's mask applies a wrong-width boolean and raises,
+            # so the dataset could not be processed at all. A key carrying no
+            # ``ch`` token (resistivity, dep_top, ...) matches nothing and is
+            # carried through unfiltered.
+            match = re.search(r"ch(\d+)", key, re.IGNORECASE)
+            if match is None:
+                continue
+            channel = int(match.group(1)) - 1
+            if not (0 <= channel < len(self.times_filter)):
+                continue
+            mask = self.times_filter[channel]
             n_gates = self._xyz.layer_data[key].shape[1]
-            filt[key] = self.times_filter[channel][:n_gates]
+            if len(mask) < n_gates:
+                # The system declares no (or too few) gate times for this
+                # channel: carry the array through unfiltered rather than apply
+                # a wrong-width mask.
+                continue
+            filt[key] = mask[:n_gates]
         return filt
         
     @property

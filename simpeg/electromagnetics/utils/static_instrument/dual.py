@@ -42,23 +42,26 @@ def _channel_field(gex, channel, field):
         return None
 
 
-def _declared_rx_orientation(gex):
-    """The receiver orientation the GEX declares, lowercased, or None.
+def _inuse_mask(layer_data, key, shape):
+    """The in-use flags at ``key`` as a boolean mask, or all-True where absent.
 
-    Only returned when every channel agrees. Channels disagreeing means the
-    file is not describing a single-orientation instrument, and picking one of
-    them would be a guess.
+    Both readers of the in-use flags in this module go through here, so a
+    dataset behaves the same whichever one looks at it.
+
+    An absent array means every gate is in use: that is what YmerFlow's importer
+    materialises anyway, and "no flags" carries no evidence that any gate is bad,
+    so the array stays optional for standalone or hand-built datasets.
+
+    A non-finite flag means not in use. NaN in an in-use array is "unknown", and
+    the conservative direction is to exclude it. The previous ``== 0`` test fell
+    the other way by accident, since ``NaN == 0`` is False, so an unknown flag
+    read as in use. Testing finiteness makes this reader safe regardless of what
+    convention wrote the array.
     """
-    orientations = set()
-    for channel in (1, 2):
-        value = _channel_field(gex, channel, "ReceiverPolarizationXYZ")
-        if value is None:
-            return None
-        orientations.add(str(value).strip().lower())
-    if len(orientations) != 1:
-        return None
-    orientation = orientations.pop()
-    return orientation if orientation in ("x", "y", "z") else None
+    if key not in layer_data:
+        return np.ones(shape, dtype=bool)
+    flags = np.asarray(layer_data[key], dtype=float)
+    return np.isfinite(flags) & (flags != 0)
 
 
 class MeasuredTEMXYZSystem(base.XYZSystem):
@@ -227,8 +230,7 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
         return out
 
     # times_filter defaults to "all gates" (inherited from XYZSystem). Cull gates
-    # per channel through processing (Disable gates ...) or the InUse flags; the
-    # DualMomentTEMXYZSystem subclass below adds the classic LM/HM gate window.
+    # per channel through processing (Disable gates ...) or the InUse flags.
 
     @property
     def correct_tilt_pitch_for1Dinv(self):
@@ -242,9 +244,9 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
 
     def _moment_data(self, channel):
         dbdt = self.xyz.layer_data["dbdt_ch%dgt" % channel].values
-        inuse_key = "dbdt_inuse_ch%dgt" % channel
-        if inuse_key in self.xyz.layer_data:
-            dbdt = np.where(self.xyz.layer_data[inuse_key] == 0, np.nan, dbdt)
+        inuse = _inuse_mask(self.xyz.layer_data,
+                            "dbdt_inuse_ch%dgt" % channel, dbdt.shape)
+        dbdt = np.where(inuse, dbdt, np.nan)
         tiltcorrection = self.correct_tilt_pitch_for1Dinv
         tiltcorrection = np.tile(tiltcorrection, (dbdt.shape[1], 1)).T
         gate_factor = _channel_field(self.gex, channel, 'GateFactor') or 1.0
@@ -271,9 +273,8 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
             if dk not in self._xyz.layer_data or sk not in self._xyz.layer_data:
                 continue
             m = np.isfinite(self._xyz.layer_data[dk].values) & np.isfinite(self._xyz.layer_data[sk].values)
-            ik = "dbdt_inuse_ch%dgt" % ch
-            if ik in self._xyz.layer_data:
-                m = m & (self._xyz.layer_data[ik].values != 0)
+            m = m & _inuse_mask(self._xyz.layer_data,
+                                "dbdt_inuse_ch%dgt" % ch, m.shape)
             count = m.sum(axis=1)
             usable = count if usable is None else usable + count
         if usable is not None:
@@ -360,126 +361,3 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
                     orientation=self.tx_orientation,
                     i_sounding=idx))
         return sources
-
-
-class DualMomentTEMXYZSystem(MeasuredTEMXYZSystem):
-    """Backwards-compatible two-moment (LM + HM) system, as used for the
-    SkyTEM instruments. Identical to :class:`MeasuredTEMXYZSystem` except that
-    the gate window can be set independently for the low- and high-moment
-    channels, matching the historical behaviour and saved configurations.
-
-    It also exposes :attr:`moment_channels`, which resolves which two channels
-    are the low and high moment by physics (dipole moment among channels of the
-    modelled orientation) rather than by position, and validates that the
-    resolved pair is coherent."""
-
-    gate_filter__start_lm = 5
-    "First LM (low moment) gate to include in the inversion, zero-based index. Early gates contaminated by transmitter on-time ringing or very early induction effects should be excluded. Check the GEX 'RemoveInitialGates' field for the system manufacturer's recommended cutoff."
-    gate_filter__end_lm = 28
-    "Last LM gate to include (exclusive, zero-based). Gates beyond this index are excluded — typically those where signal has decayed below the noise floor. Check late-time gate amplitudes in your data to identify the noise-dominated cutoff."
-    gate_filter__start_hm = 10
-    "First HM (high moment) gate to include in the inversion, zero-based index. Same considerations as start_lm. The HM channel typically has later reliable gates than LM due to its higher transmitter moment."
-    gate_filter__end_hm = 32
-    "Last HM gate to include (exclusive, zero-based). Same considerations as end_lm for the high-moment channel."
-
-    @property
-    def moment_channels(self):
-        """``(low, high)`` channel numbers, resolved by physics rather than position.
-
-        The two moments do not have to sit at channels 1 and 2. Among the
-        channels measuring the orientation being modelled, the low moment is the
-        one with the smallest ``ApproxDipoleMoment`` and the high moment the
-        largest — true whatever the file numbers them, and whatever it calls
-        them.
-
-        This matters for any instrument declaring one channel per
-        (moment, component) pair. A three-component dual-moment system declares
-        six channels, ordered LM/X LM/Y LM/Z HM/X HM/Y HM/Z; the two vertical
-        ones are 3 and 6.
-
-        Falls back to ``(1, 2)`` with a warning where the GEX declares neither
-        field, which is the behaviour established for partial and hand-built
-        files.
-        """
-        indices = _channel_indices(self.gex)
-        if not indices:
-            warnings.warn("GEX declares no Channel blocks; assuming channels 1 and 2.")
-            return (1, 2)
-
-        wanted = str(self.rx_orientation).strip().lower()
-        candidates = []
-        for index in indices:
-            declared = _channel_field(self.gex, index, "ReceiverPolarizationXYZ")
-            if declared is None or str(declared).strip().lower() == wanted:
-                candidates.append(index)
-        if not candidates:
-            warnings.warn(
-                "No channel declares a %r receiver; considering all %d channels."
-                % (wanted, len(indices)))
-            candidates = indices
-
-        moments = {i: _channel_field(self.gex, i, "ApproxDipoleMoment")
-                   for i in candidates}
-        known = {i: m for i, m in moments.items() if m is not None}
-
-        if len(known) < 2:
-            warnings.warn(
-                "GEX does not declare ApproxDipoleMoment for at least two %r "
-                "channels; falling back to channels 1 and 2." % wanted)
-            return (1, 2)
-
-        ordered = sorted(known, key=lambda i: known[i])
-        return (ordered[0], ordered[-1])
-
-    @property
-    def lm_channel(self):
-        return self.moment_channels[0]
-
-    @property
-    def hm_channel(self):
-        return self.moment_channels[1]
-
-    @property
-    def times_filter(self):
-        chans = self.channels
-        times = self.times_full
-        filts = [np.zeros(len(t), dtype=bool) for t in times]
-        lm, hm = chans[0], chans[1]
-        filts[lm - 1][self.gate_filter__start_lm:self.gate_filter__end_lm] = True
-        filts[hm - 1][self.gate_filter__start_hm:self.gate_filter__end_hm] = True
-        return filts
-
-    def do_validate(self):
-        """Flat per-channel validation (parent) plus the two-moment coherence
-        checks: the resolved pair must have distinct dipole moments and share a
-        receiver orientation, otherwise they are not two moments of one
-        component."""
-        super().do_validate()
-
-        lm, hm = self.moment_channels
-
-        lm_moment = _channel_field(self.gex, lm, "ApproxDipoleMoment")
-        hm_moment = _channel_field(self.gex, hm, "ApproxDipoleMoment")
-        if lm_moment is None or hm_moment is None:
-            warnings.warn(
-                "GEX does not declare ApproxDipoleMoment for channels %d and %d; "
-                "cannot confirm which is the low moment." % (lm, hm))
-        else:
-            assert lm_moment < hm_moment, (
-                "Resolved channels %d and %d have dipole moments %.0f and %.0f A m^2. "
-                "The low moment must be the smaller; this instrument does not give "
-                "two distinguishable moments on the %r receiver."
-                % (lm, hm, lm_moment, hm_moment, self.rx_orientation))
-
-        lm_rx = _channel_field(self.gex, lm, "ReceiverPolarizationXYZ")
-        hm_rx = _channel_field(self.gex, hm, "ReceiverPolarizationXYZ")
-        if lm_rx is None or hm_rx is None:
-            warnings.warn(
-                "GEX does not declare ReceiverPolarizationXYZ for channels %d and %d; "
-                "cannot confirm they share a receiver orientation." % (lm, hm))
-        else:
-            lm_rx, hm_rx = str(lm_rx).strip().lower(), str(hm_rx).strip().lower()
-            assert lm_rx == hm_rx, (
-                "Resolved channels %d and %d declare different receiver orientations "
-                "(%r and %r), so they are two components of one moment rather than "
-                "two moments." % (lm, hm, lm_rx, hm_rx))

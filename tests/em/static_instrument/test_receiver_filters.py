@@ -5,13 +5,13 @@ A GEX can carry up to two first-order low-pass filters, the coil filter in
 receiver properties to apply them. Nothing connected the two, so every forward
 ran unfiltered: 20% low at the earliest SkyTEM LM gates against Workbench's
 forward of the same model (YmerFlow/Ymerflow#94). The wiring lives in
-``MeasuredTEMXYZSystem``, so single-moment central-loop systems and the
-dual-moment subclass both get it.
+``MeasuredTEMXYZSystem``, so single-moment central-loop and multi-moment
+systems alike get it.
 
 Everything here is built in memory around the smallest GEX that lets
 ``make_system`` run: a two-point waveform, a coil position, and the channel
-blocks the moment resolution needs. Channels are addressed by their GEX channel
-number (the N-moment API), not by a contiguous moment index.
+blocks the system needs. Channels are addressed by their GEX channel number
+(the N-moment API), not by a contiguous moment index.
 """
 
 import numpy as np
@@ -81,9 +81,7 @@ def make_xyz(n_moments):
 
 
 def system(gex, **options):
-    base_class = dual.DualMomentTEMXYZSystem if gex.number_channels == 2 else dual.MeasuredTEMXYZSystem
-
-    class System(base_class):
+    class System(dual.MeasuredTEMXYZSystem):
         pass
     System.gex = gex
     s = System(make_xyz(gex.number_channels), validate=False)
