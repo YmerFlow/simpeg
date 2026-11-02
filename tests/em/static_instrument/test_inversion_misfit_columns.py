@@ -65,7 +65,8 @@ def system(with_input_misfit=False):
     class System(dual.DualMomentTEMXYZSystem):
         pass
     System.gex = FakeGEX()
-    s = System(make_xyz(with_input_misfit), validate=False)
+    s = System(make_xyz(with_input_misfit), validate=False,
+               doi__enable=False)   # the stand-in simulation below has no Jacobian
     s.options.update(gate_filter__start_lm=0, gate_filter__end_lm=N_GATES,
                      gate_filter__start_hm=0, gate_filter__end_hm=N_GATES)
     return s
