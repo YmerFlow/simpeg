@@ -40,11 +40,15 @@ from .utils import (detect_cpu_availability, describe_layers, lateral_median, la
 import warnings
 
 from pymatsolver import SolverLU
+# pymatsolver's Pardiso imports without pydiso but fails when used, so ask
+# AvailableSolvers whether it works here (it needs pydiso: x86-64 with MKL).
 try:
-    from pymatsolver import PardisoSolver as Solver
-    print("pymatsolver.PardisoSolver available for fwd modelling")
-except:
-    print("Could not import PardisoSolver, only default (spLU) available")
+    from pymatsolver import AvailableSolvers, PardisoSolver
+    PARDISO_AVAILABLE = bool(AvailableSolvers.get("Pardiso", False))
+except ImportError:
+    PardisoSolver, PARDISO_AVAILABLE = None, False
+print("pymatsolver Pardiso available" if PARDISO_AVAILABLE
+      else "pymatsolver Pardiso not available, only the default (spLU) solver")
 
 try:
     from kneed import KneeLocator
@@ -508,6 +512,11 @@ class XYZSystem(object):
                    if self.simulation__fast_coefficients
                    else tdem.Simulation1DLayeredStitched)
         if 'pardiso' in self.simulation__solver.lower():
+            if not PARDISO_AVAILABLE:
+                raise ValueError(
+                    "simulation__solver is 'pardiso', but pymatsolver's Pardiso is not available "
+                    "in this environment (it needs the pydiso package, on x86-64 with Intel MKL). "
+                    "Use 'LU', or install pydiso.")
             print('Using Pardiso solver')
             sim = sim_cls(
                 survey=survey,
