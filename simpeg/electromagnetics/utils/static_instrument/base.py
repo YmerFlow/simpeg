@@ -838,6 +838,11 @@ class XYZSystem(object):
     """
     regularization__L_z: length_scale_of("alpha_z") = 50.
     "Length scale of alpha_z, in the CRS linear unit: alpha_z = alpha_s * L_z**2. Give either one; see L_r."
+    regularization__distance_weighted: typing.Annotated[bool, {"swaggerspect_deprecated": True}] = None
+    """Deprecated and ignored: distance weighting is always on (ymerflow-business#119). Leave it unset.
+
+    Accepted only so that saved parameter sets that carry it still run: true is ignored with a
+    warning, false stops the run. To be removed; see docs/plans/drop-distance-weighted.md."""
     regularization__alpha_r_inline: float = None
     """Lateral weight of the links along each flight line (YmerFlow/simpeg#31).
 
@@ -883,8 +888,16 @@ class XYZSystem(object):
         Raises
         ------
         ValueError
-            If an alpha and its length were both given and disagree.
+            If an alpha and its length were both given and disagree, or the deprecated
+            regularization__distance_weighted is false.
         """
+        if self.regularization__distance_weighted is not None:
+            if not self.regularization__distance_weighted:
+                raise ValueError("regularization__distance_weighted = False is no longer possible: "
+                                 "distance weighting is always on. Remove the field from the parameters.")
+            warnings.warn("regularization__distance_weighted is deprecated and ignored, since distance "
+                          "weighting is always on; remove it from the parameters. It is to be dropped, "
+                          "see docs/plans/drop-distance-weighted.md.", FutureWarning)
         alpha_s = self.regularization__alpha_s
         w = {"alpha_s": alpha_s}
 

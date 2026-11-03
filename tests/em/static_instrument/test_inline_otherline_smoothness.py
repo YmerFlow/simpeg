@@ -243,6 +243,17 @@ def test_alpha_s_zero_keeps_the_default_alphas_without_lengths():
     assert resolved(weights(regularization__alpha_s=0.0)) == (25.0, None, 0.25, None)
 
 
+def test_deprecated_distance_weighted_true_is_ignored_with_a_warning():
+    with pytest.warns(FutureWarning, match="drop-distance-weighted"):
+        w = weights(regularization__distance_weighted=True)
+    assert w == weights()
+
+
+def test_deprecated_distance_weighted_false_stops_the_run():
+    with pytest.raises(ValueError, match="distance weighting is always on"):
+        weights(regularization__distance_weighted=False)
+
+
 def test_the_split_needs_a_line_column_and_flight_order():
     xyz = parallel_lines()
     no_line = make_xyz(xyz.flightlines.x, xyz.flightlines.y, None, xdist=xyz.flightlines.xdist)
@@ -291,3 +302,4 @@ def test_the_schema_links_each_length_to_its_sibling_alpha():
         assert group[length]["type"] == "number"
         assert group[length]["x-length-scale"] == {"alpha": alpha, "alpha_s": "alpha_s"}
         assert alpha in group and "alpha_s" in group
+    assert group["distance_weighted"]["deprecated"] is True
