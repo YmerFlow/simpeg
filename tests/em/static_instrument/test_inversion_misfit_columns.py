@@ -65,7 +65,8 @@ def system(with_input_misfit=False):
     class System(dual.MeasuredTEMXYZSystem):
         pass
     System.gex = FakeGEX()
-    s = System(make_xyz(with_input_misfit), validate=False)
+    s = System(make_xyz(with_input_misfit), validate=False,
+               doi__enable=False)   # the stand-in simulation below has no Jacobian
     return s
 
 

@@ -43,7 +43,7 @@ def simulation(solver):
         xyz.layer_data["dbdt_ch%dgt" % ch] = pd.DataFrame(np.full((N_SOUNDINGS, N_GATES), 1e-9))
         xyz.layer_data["dbdt_std_ch%dgt" % ch] = pd.DataFrame(np.full((N_SOUNDINGS, N_GATES), 0.05))
 
-    class System(dual.DualMomentTEMXYZSystem):
+    class System(dual.MeasuredTEMXYZSystem):
         pass
     System.gex = FakeGEX()
     s = System(xyz, validate=False, simulation__solver=solver, simulation__parallel=False,

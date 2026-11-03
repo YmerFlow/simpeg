@@ -578,16 +578,49 @@ class BaseEM1DSimulation(BaseSimulation):
             toDelete += ["_J", "_gtgdiag"]
         return toDelete
 
-    # TODO: need to revisit this:
-    def depth_of_investigation_christiansen_2012(self, std, thres_hold=0.8):
-        pred = self.survey._pred.copy()
-        delta_d = std * np.log(abs(self.survey.dobs))
-        J = self.getJ(self.model)
-        J_sum = abs(utils.sdiag(1 / delta_d / pred) * J).sum(axis=0)
-        S = np.cumsum(J_sum[::-1])[::-1]
-        active = S - thres_hold > 0.0
-        doi = abs(self.depth[active]).max()
-        return doi, active
+    def depth_of_investigation_christiansen_2012(
+        self, m, relative_uncertainty, thresholds=(1.5, 0.75), weighted=False
+    ):
+        """Christiansen-Auken (2012) depth of investigation of this sounding at model ``m``.
+
+        A thin wrapper over :mod:`simpeg.electromagnetics.utils.doi_utils`, where the method,
+        the scale and the thresholds are documented; for a stitched simulation use
+        ``doi_utils.doi_christiansen_auken``. Replaces an earlier version that divided by
+        ``std * log|d|`` and read a ``survey._pred`` no 1-D simulation sets.
+
+        Parameters
+        ----------
+        m : ndarray (n_layer,)
+            Model in the simulation's model space.
+        relative_uncertainty : ndarray (n_data,)
+            Relative standard deviation of each datum [fraction]; ``inf`` for unused data.
+        thresholds : sequence of float
+            Absolute thresholds [dimensionless]; default Aarhus Workbench's 1.5 (upper) and
+            0.75 (lower).
+        weighted : bool
+            Divide by the relative standard deviation (eq. 3 as printed); default False.
+
+        Returns
+        -------
+        doi : ndarray (len(thresholds),)
+            DOI [m below the surface, positive down] per threshold.
+        S : ndarray (n_layer,)
+            Cumulative sensitivity at each layer top [dimensionless].
+        """
+        from .utils.doi_utils import (
+            log_sensitivity,
+            layer_sensitivity,
+            cumulative_sensitivity,
+            doi_from_cumulative,
+        )
+
+        d_pred = self.dpred(m)
+        G = log_sensitivity(np.asarray(self.getJ(m)["ds"]), self.sigma, d_pred)
+        s = layer_sensitivity(G, np.asarray(relative_uncertainty, dtype=float), weighted)
+        S = cumulative_sensitivity(s)
+        depth_top = -self.depth
+        doi = np.array([doi_from_cumulative(S, depth_top, t)[0] for t in thresholds])
+        return doi, S
 
     def get_threshold(self, uncert):
         _, active = self.depth_of_investigation(uncert)

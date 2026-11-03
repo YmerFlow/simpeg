@@ -53,7 +53,7 @@ def system_with_empty_gates():
     xyz.layer_data["dbdt_ch1gt"].iloc[:, -2:] = np.nan     # 8 late LM gates culled
     xyz.layer_data["dbdt_std_ch2gt"].iloc[0, 0] = np.nan   # 1 HM gate with no error
 
-    class System(dual.DualMomentTEMXYZSystem):
+    class System(dual.MeasuredTEMXYZSystem):
         pass
     System.gex = FakeGEX()
     s = System(xyz, validate=False)
