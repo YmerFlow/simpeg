@@ -56,7 +56,7 @@ def make_xyz():
 
 
 def system(**opts):
-    class System(dual.DualMomentTEMXYZSystem):
+    class System(dual.MeasuredTEMXYZSystem):
         pass
     System.gex = FakeGEX()
     s = System(make_xyz(), validate=False, simulation__parallel=False, simulation__n_cpu=1, **opts)

@@ -1120,6 +1120,10 @@ class TargetMisfit(InversionDirective):
     def endIter(self):
         if self.invProb.phi_d < self.target:
             self.opt.stopNextIteration = True
+            print(
+                "TargetMisfit stopping: phi_d %.6g < target %.6g (chifact %g x phi_d_star %.6g)"
+                % (self.invProb.phi_d, self.target, self.chifact, self.phi_d_star)
+            )
             self.print_final_misfit()
 
     def print_final_misfit(self):
@@ -2318,7 +2322,11 @@ class Update_IRLS(InversionDirective):
                 np.abs(1.0 - self.invProb.phi_d / self.target) < self.beta_tol,
             ]
         ):
-            print("Minimum decrease in regularization." + "End of IRLS")
+            print(
+                "Minimum decrease in regularization. End of IRLS: change %.3g < f_min_change %.3g, "
+                "phi_d %.6g within beta_tol %g of target %.6g"
+                % (f_change, self.f_min_change, self.invProb.phi_d, self.beta_tol, self.target)
+            )
             return True
 
         self.f_old = phim_new

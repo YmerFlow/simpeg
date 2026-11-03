@@ -49,7 +49,3 @@ class SyntheticTEMXYZSystem(base.XYZSystem):
             radius = np.sqrt(self.area/np.pi),
             current = self.i_max,
             i_sounding = idx)]
-
-
-# Backwards-compatible alias: this system used to be the "single moment" system.
-SingleMomentTEMXYZSystem = SyntheticTEMXYZSystem

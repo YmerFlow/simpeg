@@ -135,7 +135,8 @@ def test_picks_up_beta0_at_first_iteration_when_no_estimator_ran():
     assert inv.invProb.beta == pytest.approx(40.0)    # 80/8 = 10 would breach the floor of 40
 
 
-def test_target_falls_back_to_half_the_data_count_without_a_target_directive():
+def test_target_falls_back_to_the_data_count_without_a_target_directive():
+    # phi_d is the plain sum of squared weighted residuals, as in TargetMisfit.
     d = MisfitDrivenBetaSchedule(verbose=False)
     inv = FakeInversion(target=50.0, beta0=100.0)
     inv.directiveList.dList = []                       # no TargetMisfit in the list
@@ -143,7 +144,7 @@ def test_target_falls_back_to_half_the_data_count_without_a_target_directive():
     # The fallback reads survey.nD through the data misfit, so give it one with two surveys.
     objfcts = [SimpleNamespace(simulation=SimpleNamespace(survey=SimpleNamespace(nD=n))) for n in (30, 70)]
     d._dmisfit = SimpleNamespace(objfcts=objfcts)
-    assert d.target == 50.0
+    assert d.target == 100.0
 
 
 # ── Wiring: the instrument builds the right directive from its options ───────
