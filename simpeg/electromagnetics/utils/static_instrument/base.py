@@ -785,97 +785,59 @@ class XYZSystem(object):
     #    6) geomean of the linespacing and sounding spacing: sqrt(line_space * sound_space)
     #        - 25m sounding spacing, 100m line spacing: h=50, alpha_s=4e-4
     regularization__alpha_s = 1e-4
-    """Smallness weight — anchors every model cell toward the reference resistivity (startmodel__res).
+    """Smallness weight: pulls every model cell toward the reference model (regularization__mref).
 
-    Unlike alpha_r and alpha_z, which enforce smoothness between neighboring cells, alpha_s acts
-    globally: it adds a cost for any cell that deviates from the reference model, regardless of its
+    Unlike the smoothness terms, which act between neighboring cells, alpha_s acts on each cell
+    alone: it adds a cost for any cell that deviates from the reference model, regardless of its
     neighbors. This is important in poorly-sampled regions (deep layers, survey edges) where the
-    data have little sensitivity — without alpha_s the model is free to drift to arbitrary values in
-    those regions.
+    data have little sensitivity; without alpha_s the model is free to drift to arbitrary values
+    in those regions.
 
-    IMPORTANT: alpha_s does NOT control lateral resolution. To suppress short-wavelength lateral
-    structure, increase alpha_r instead. alpha_s only controls how strongly the whole model is pulled
-    toward the starting resistivity.
+    The smoothness weights are tied to it by their length scales, alpha = alpha_s * L**2 (see
+    regularization__L_r). A length scale is the distance at which smoothness and smallness weigh
+    the same: structure shorter than L is smoothed out, and further than L from where the data
+    constrain the model, the reference model takes over. Changing only alpha_s keeps the lengths
+    and scales every alpha with it, so the shape of the regularization is unchanged and only its
+    overall size moves, which an estimated starting beta follows.
 
-    Scaling: alpha_s ≈ 1/h², where h is the geometric mean of sounding spacing and line spacing.
-    This keeps alpha_s numerically comparable to the smoothness terms (alpha_r, alpha_z = 1.0 by default):
-      - 25 m sounding / 100 m line spacing  →  h = 50 m  →  alpha_s ≈ 4e-4
-      - 30 m sounding / 100 m line spacing  →  h = 55 m  →  alpha_s ≈ 3e-4
-      - 100 m sounding / 100 m line spacing →  h = 100 m →  alpha_s ≈ 1e-4  (default)
-      - 25 m sounding / 400 m line spacing  →  h = 100 m →  alpha_s ≈ 1e-4
-
-    Too large: resistivity contrasts are suppressed and the model sits near startmodel__res everywhere.
-    Too small: the model drifts freely in low-sensitivity regions, producing depth artifacts or
-    spurious structure between flight lines.
+    alpha_s does NOT control lateral resolution; the length scales do. At the default 1e-4 the
+    default lengths give alpha_r 25 and alpha_z 0.25.
     """
-    regularization__alpha_r = 1.
-    """Lateral smoothness weight — penalizes resistivity differences between neighboring soundings.
+    regularization__alpha_r = 25.
+    """Lateral smoothness weight: penalizes resistivity gradients between neighboring soundings.
 
-    This is the primary control on effective lateral resolution. The inversion links soundings via
-    a Delaunay triangulation of their positions, and alpha_r scales how strongly adjacent soundings
-    are pulled toward each other.
+    The inversion links soundings by a Delaunay triangulation of their positions, and divides each
+    link's difference by the link's length (ymerflow-business#119). Lateral smoothness is therefore
+    a gradient, and a long link, such as one between flight lines kilometers apart, is weak next
+    to one between neighboring soundings on a line.
 
-    What alpha_r means depends on regularization__distance_weighted:
-      - False (default): every triangulation link is a plain difference, whatever its length, so
-        alpha_r is a per-link weight, not a length scale. A link between two flight lines
-        kilometers apart weighs the same as one between neighboring soundings on a line
-        (ymerflow-business#119). The guidance below applies to this mode.
-      - True: each difference is divided by the link's length, so lateral smoothness is a
-        gradient in meters and long links are automatically weak. alpha_r then sets a length
-        scale: L_r = sqrt(alpha_r / alpha_s) meters (e.g. alpha_s 1e-4, alpha_r 1 → 100 m),
-        and L_r can be given instead.
-
-    To target an effective lateral resolution D with sounding spacing d (distance_weighted False), set:
-        alpha_r ≈ (D / d)² × alpha_z
-    For example, with 30 m sounding spacing and a target resolution of ~100 m:
-        alpha_r ≈ (100/30)² × 1.0 ≈ 10
-
-    alpha_r has no effect on vertical structure within a sounding — use alpha_z for that.
-    The default (1.0, isotropic with alpha_z) is appropriate when the sounding spacing already
-    matches your desired lateral resolution. Increase alpha_r for laterally continuous geology
-    (e.g., sedimentary basins); keep it low if you expect sharp lateral boundaries.
+    alpha_r is easier to read as its length scale, L_r = sqrt(alpha_r / alpha_s): the default 25
+    with alpha_s 1e-4 is L_r 500 m. A longer L_r smooths over longer distances, for laterally
+    continuous geology such as sedimentary basins; a shorter one allows sharper lateral changes.
+    alpha_r has no effect on vertical structure within a sounding; use alpha_z for that.
     """
-    regularization__L_r: length_scale_of("alpha_r") = None
+    regularization__L_r: length_scale_of("alpha_r") = 500.
     """Length scale of alpha_r, in the CRS linear unit (m or ft): alpha_r = alpha_s * L_r**2.
 
-    Another way to give alpha_r, with distance_weighted on. Given alone, a length sets its alpha
-    and an alpha sets its length; given together they must agree to one part in a million, or
-    the run stops naming both. Giving the length keeps the length scale when alpha_s changes.
-    The same holds for L_z, L_inline and L_otherline. The run log prints every alpha with its
-    length."""
-    regularization__alpha_z = 1.
-    """Vertical smoothness weight — penalizes resistivity differences between adjacent layers within each sounding.
+    Another way to give alpha_r. An alpha's default and its length's default agree at the default
+    alpha_s, and a default never counts as given: set one of the pair and the other follows from
+    it; set both and they must agree to one part in a million, or the run stops naming both. Set
+    neither and the default length holds, so changing only alpha_s keeps the length and moves the
+    alpha. The same holds for L_z, L_inline and L_otherline. The default lengths are meters; with
+    a CRS in feet, give them. The run log prints every alpha with its length."""
+    regularization__alpha_z = 0.25
+    """Vertical smoothness weight: penalizes resistivity gradients between adjacent layers within each sounding.
 
-    Controls how sharply resistivity is allowed to change with depth. The ratio alpha_z / alpha_r
-    sets the anisotropy of the regularization:
-      - alpha_z = alpha_r (default): isotropic — lateral and vertical gradients are penalized equally.
-      - alpha_z > alpha_r: enforces stronger vertical smoothness, useful for environments with
-        well-defined horizontal layering and little lateral variation.
-      - alpha_z < alpha_r: allows more vertical structure while enforcing lateral continuity, useful
-        when you expect sharp boundaries at depth but a laterally uniform stratigraphy.
+    Each difference is divided by the distance between the layer centers, so vertical smoothness
+    is a gradient and alpha_z sets a vertical length scale, L_z = sqrt(alpha_z / alpha_s): the
+    default 0.25 with alpha_s 1e-4 is L_z 50 m. A longer L_z gives models that change more slowly
+    with depth; a shorter one allows sharper boundaries at depth.
 
-    Note that the absolute values of alpha_r and alpha_z matter less than their ratio — doubling
-    both changes nothing about the model shape, only about how alpha_s balances against smoothness.
-
-    With regularization__distance_weighted False (default) this is a per-layer-interface weight;
-    with it True, differences are divided by the distance between layer centers and alpha_z sets a
-    vertical length scale: L_z = sqrt(alpha_z / alpha_s) meters (alpha_s 1e-4, alpha_z 0.0625 → 25 m).
+    The ratio of the lateral to the vertical length sets the anisotropy of the regularization:
+    by default the model is smoothed over 500 m laterally and 50 m vertically.
     """
-    regularization__L_z: length_scale_of("alpha_z") = None
+    regularization__L_z: length_scale_of("alpha_z") = 50.
     "Length scale of alpha_z, in the CRS linear unit: alpha_z = alpha_s * L_z**2. Give either one; see L_r."
-    regularization__distance_weighted: bool = False
-    """Divide each smoothness difference by the real distance it spans (ymerflow-business#119).
-
-    False (default, historical behavior): every lateral triangulation link and every layer
-    interface is a plain difference, so alpha_r and alpha_z are per-link and per-layer weights,
-    not length scales. Because the triangulation joins neighboring flight lines, a sounding is then
-    tied to a line kilometers away as strongly as to its own neighbors wherever the data are weak.
-
-    True: lateral differences are divided by the link length and vertical ones by the distance
-    between layer centers, as in SimPEG's tensor-mesh regularization and Workbench LCI/SCI. Long
-    cross-line links become weak automatically, and alpha_r / alpha_z set length scales in meters:
-    L = sqrt(alpha / alpha_s). Existing alpha values do not carry over between the two modes.
-    """
     regularization__alpha_r_inline: float = None
     """Lateral weight of the links along each flight line (YmerFlow/simpeg#31).
 
@@ -885,15 +847,15 @@ class XYZSystem(object):
     Delaunay edges between soundings on different lines; Delaunay edges between two soundings of
     the same line are left out, since the inline chain replaces them. A tie line is simply
     another line, so a crossing is a short otherline link. The weight not set defaults to
-    alpha_r. Needs distance_weighted on and a line column. With both unset, the lateral
-    smoothness is alpha_r on every Delaunay edge, as before."""
+    alpha_r. Needs a line column. With both unset, the lateral smoothness is alpha_r on every
+    Delaunay edge, as before."""
     regularization__L_inline: length_scale_of("alpha_r_inline") = None
     "Length scale of alpha_r_inline, in the CRS linear unit: alpha_r_inline = alpha_s * L_inline**2. Give either one; see L_r."
     regularization__alpha_r_otherline: float = None
     """Lateral weight of the links between flight lines; see alpha_r_inline.
 
-    With distance weighting, the pull a sounding feels from parallel lines a distance l away is
-    about 4 * (L_otherline / l)**2 relative to the smallness, so holding lines 2 km apart together
+    The pull a sounding feels from parallel lines a distance l away is about
+    4 * (L_otherline / l)**2 relative to the smallness, so holding lines 2 km apart together
     takes L_otherline of the order of a kilometer: at 100 m the lines are effectively
     independent. 0 inverts each line on its own, all lines sharing one beta schedule and one
     stopping rule."""
@@ -916,39 +878,38 @@ class XYZSystem(object):
             ``alpha_s``; ``alpha_r``, ``L_r``; ``alpha_z``, ``L_z``; ``alpha_r_inline``,
             ``L_inline``, ``alpha_r_otherline``, ``L_otherline`` (None unless the lateral
             smoothness is split); ``split`` (bool). Lengths are in the CRS linear unit, None
-            where a length has no meaning (distance weighting off, or alpha_s 0).
+            where alpha_s is 0 (a length has no meaning then).
 
         Raises
         ------
         ValueError
-            If an alpha and its length disagree, or a length or the split is asked for with
-            distance weighting off.
+            If an alpha and its length were both given and disagree.
         """
         alpha_s = self.regularization__alpha_s
-        weighted = self.regularization__distance_weighted
         w = {"alpha_s": alpha_s}
 
-        def pair(alpha, length, default):
+        def pair(alpha, length):
             a_name, l_name = "regularization__" + alpha, "regularization__" + length
-            L = getattr(self, l_name)
-            if L is not None and not weighted:
-                raise ValueError(f"{l_name} = {L:g} is a length scale, which needs "
-                                 "regularization__distance_weighted = True")
-            given = getattr(self, a_name) if self._given(a_name) else None
-            a, L = resolve_pair(given, L, alpha_s, a_name, l_name)
-            if a is None:
-                a, L = resolve_pair(default, None, alpha_s, a_name, l_name)
-            w[alpha], w[length] = a, (L if weighted else None)
+            a, L = (getattr(self, n) if self._given(n) else None for n in (a_name, l_name))
+            # A form may send every field, defaults included: of a pair given together, one
+            # left at its default gives way to the other (the alpha, if both are).
+            if a is not None and L is not None:
+                if a == getattr(XYZSystem, a_name):
+                    a = None
+                elif L == getattr(XYZSystem, l_name):
+                    L = None
+            if a is None and L is None:
+                # Defaults never count as given: the default length holds and the alpha
+                # follows alpha_s, or with alpha_s 0 (no length) the default alpha.
+                L = getattr(self, l_name) if alpha_s > 0 else None
+                a = getattr(self, a_name) if L is None else None
+            w[alpha], w[length] = resolve_pair(a, L, alpha_s, a_name, l_name)
 
-        pair("alpha_r", "L_r", self.regularization__alpha_r)
-        pair("alpha_z", "L_z", self.regularization__alpha_z)
-        pair("alpha_r_inline", "L_inline", None)
-        pair("alpha_r_otherline", "L_otherline", None)
+        pair("alpha_r", "L_r")
+        pair("alpha_z", "L_z")
+        pair("alpha_r_inline", "L_inline")
+        pair("alpha_r_otherline", "L_otherline")
         w["split"] = w["alpha_r_inline"] is not None or w["alpha_r_otherline"] is not None
-        if w["split"] and not weighted:
-            raise ValueError("regularization__alpha_r_inline and alpha_r_otherline need "
-                             "regularization__distance_weighted = True: without it they are "
-                             "per-link weights with no length meaning")
         if w["split"]:
             for kind in ("inline", "otherline"):
                 if w["alpha_r_" + kind] is None:
@@ -1049,7 +1010,6 @@ class XYZSystem(object):
         # triangulation may have needed; Delaunay keeps the input point order.
         mesh_reg = simpeg.regularization.LCRegularizationMesh(
             [mesh_radial, mesh_vertical],
-            distance_weighted=self.regularization__distance_weighted,
             locations=coords,
             edges=edges,
             edge_weights=alphas,

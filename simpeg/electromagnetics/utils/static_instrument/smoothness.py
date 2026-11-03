@@ -1,7 +1,7 @@
 """Lateral links and smoothness length scales for stitched 1-D inversions.
 
-With distance weighting (``regularization__distance_weighted``), a smoothness weight alpha
-and its length scale L are two forms of one setting, alpha = alpha_s * L**2. The functions
+The smoothness is distance weighted, so a smoothness weight alpha and its length scale L
+are two forms of one setting, alpha = alpha_s * L**2. The functions
 here resolve such a pair, build the two kinds of lateral link (along a flight line and
 between lines), and give the type that links a length parameter to its alpha in the
 parameter schema.
