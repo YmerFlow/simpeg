@@ -1,6 +1,6 @@
 # Lateral smoothing along a line and between lines
 
-**State:** decided 2026-10-31; schema shape revised 2026-11-02 (group-object `x-format`, see section 2), decisions 1 and 8 open
+**State:** decided 2026-10-31; schema shape revised 2026-11-02 (group-object `x-format`, see section 2); decision 1 settled 2026-11-03; decision 8 open
 **Labels:** enhancement, inversion
 **Builds on:** #28 (distance-weighted lateral and vertical smoothness)
 
@@ -41,7 +41,8 @@ How a run resolves a pair:
 
 - a length given sets its alpha;
 - an alpha given alone sets its length;
-- both given and differing by more than one part in a million stops the run, naming both values and the alpha they disagree on.
+- both given and differing by more than one part in a million stops the run, naming both values and the alpha they disagree on;
+- defaults never count as given (decision 1): with neither set, the default length holds and the alpha follows `alpha_s`, and of a pair submitted together, one left at its default gives way to the other, so a form that sends every field does not trip the disagreement check.
 
 When `alpha_s` changes, the lengths are held and the alphas recomputed, since the length scales are the geological choice (decision 7). The run report prints every alpha with its length, in meters or feet.
 
@@ -65,7 +66,7 @@ The schema carries this as a single `x-format` annotation on the enclosing **gro
 
 The widget owns the whole group, so no field refers to another by name and nothing outside the group is touched. On the frontend this is one object-level dispatch (`if (schema['x-format'] === 'length-scale')`) returning a self-contained widget, mirroring `CustomStringField`; it does **not** wrap the generic `ObjectField` or inspect sibling keys.
 
-Enabling work: `_group_parameters` synthesizes the `regularization` object itself and today preserves annotations only on leaf fields, not on the group it builds — which is why a per-leaf annotation was the only shape that survived. swaggerspect needs a small extension so a flattened group can carry group-level schema keys (e.g. `x-format`); how a Python class declares them on a synthesized group is an open sub-question (decision 8). Whether the length scales (`L_*`) are members of this group and submitted, or derived in the widget and never stored, is decision 1 (reopened below).
+Enabling work: `_group_parameters` synthesizes the `regularization` object itself and today preserves annotations only on leaf fields, not on the group it builds — which is why a per-leaf annotation was the only shape that survived. swaggerspect needs a small extension so a flattened group can carry group-level schema keys (e.g. `x-format`); how a Python class declares them on a synthesized group is an open sub-question (decision 8). The length scales (`L_*`) are members of this group and submitted, beside the alphas (decision 1).
 
 Alphas for a given length scale, at `alpha_s` = 1e-4, and the resulting pull from neighboring lines 1.9 km away:
 
@@ -84,7 +85,7 @@ Alphas for a given length scale, at `alpha_s` = 1e-4, and the resulting pull fro
 
 - The split applies only when either new weight is set, by its alpha or its length. With both unset, #28's behavior is unchanged: Delaunay links and one `alpha_r`.
 - With one set, the other defaults to `alpha_r`.
-- Both need `regularization__distance_weighted = True`, since without it they are per-link weights with no length; setting either with distance weighting off raises an error that says so.
+- Both need distance weighting, since without it they are per-link weights with no length. Since 2026-11-03 distance weighting is always on (ymerflow-business#119), so `regularization__distance_weighted` and this check are gone.
 - The `Line` column is required; without it the run stops before inverting.
 
 ### 4. `alpha_r_otherline = 0`: lines inverted independently in one job
@@ -118,10 +119,10 @@ Measured for each: misfit per line, iterations, wall time, and the difference in
 
 | # | Question | Options | Decision |
 |---|---|---|---|
-| 1 | Parameter form (source of truth) | A: alphas only in the schema, lengths derived in the widget and only printed in the report. B: lengths only. C: both `alpha_*` and `L_*` are schema members and submitted, each updating the other, backend resolves pairs. | **Reopened 2026-11-02.** Was C (2026-10-31). The group-widget convention makes A clean (no `L_*` params, no pair-resolution, no disagreement error, section 2/3 run-resolution text drops); C keeps lengths usable by non-form callers (MCP/CLI) at the cost of a dual source of truth. To settle. |
+| 1 | Parameter form (source of truth) | A: alphas only in the schema, lengths derived in the widget and only printed in the report. B: lengths only. C: both `alpha_*` and `L_*` are schema members and submitted, each updating the other, backend resolves pairs. | **C, settled 2026-11-03** (ymerflow-business#119). Was C (2026-10-31), reopened 2026-11-02 because the group-widget convention makes A clean; C keeps lengths usable by non-form callers (MCP/CLI). Every alpha and its length carry defaults that give the same numbers at the default `alpha_s` 1e-4: `L_r`, `L_inline`, `L_otherline` 500 m with alpha 25, `L_z` 50 m with `alpha_z` 0.25. A default never counts as given: the member set wins and the other follows from alpha = alpha_s L^2 (section 2). |
 | 2 | Same-line Delaunay chords | A: leave them out; the inline chain replaces them. B: keep them as inline links. | A. Chords tie a curving line's soundings across the bend. |
 | 3 | Behavior with both new options unset | A: #28 unchanged. B: always use the inline chain and otherline links. | A, so existing runs reproduce. |
-| 4 | Distance weighting off | A: error if either new option is set. B: allow as per-link weights. | A. Without distance the two weights have no length meaning. |
+| 4 | Distance weighting off | A: error if either new option is set. B: allow as per-link weights. | A. Without distance the two weights have no length meaning. Moot since 2026-11-03: distance weighting is always on (ymerflow-business#119). |
 | 5 | Test runs | The four above, or another set. | The four above. |
 | 6 | Length fields for the existing weights | A: add `L_z` and `L_r` beside `alpha_z` and `alpha_r`, linked the same way. B: only the two new weights get lengths. | A, so every smoothness setting reads the same way. |
 | 7 | What `alpha_s` changes | A: hold the lengths, recompute the alphas. B: hold the alphas, recompute the lengths. | A. The lengths are the geological choice; `alpha_s` sets how strongly the model is held to the reference. |
