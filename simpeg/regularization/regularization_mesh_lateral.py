@@ -26,6 +26,13 @@ class LCRegularizationMesh(RegularizationMesh):
         the edge lengths when ``distance_weighted`` is True. Defaults to the lateral
         mesh's own nodes. Pass the true positions when the mesh was built from
         jittered ones (as for a single straight flight line).
+    :param numpy.ndarray edges: optional (n_edges, 2) node index pairs the lateral
+        gradient differences, in place of the triangulation's edges (e.g. a chain
+        along each flight line plus the triangulation edges between lines). The
+        lateral mesh then only supplies the nodes.
+    :param numpy.ndarray edge_weights: optional (n_edges,) non-negative weight of each
+        lateral edge; its gradient row is scaled by the square root, so the edge
+        enters the smoothness as ``weight * (dm / length) ** 2`` (times ``alpha_r``).
 
     """
 
@@ -38,14 +45,53 @@ class LCRegularizationMesh(RegularizationMesh):
         active_edges=None,
         distance_weighted=False,
         locations=None,
+        edges=None,
+        edge_weights=None,
         **kwargs,
     ):
         self.mesh_radial = mesh[0]
         self.mesh_vertical = mesh[1]
         self.active_edges = active_edges
         self.locations = locations
+        self.edges = None if edges is None else np.asarray(edges, dtype=int).reshape(-1, 2)
+        if self.edges is not None and (
+            (self.edges < 0).any() or (self.edges >= self.n_nodes).any()
+        ):
+            raise ValueError(f"edges must index the {self.n_nodes} nodes of the lateral mesh")
+        self.edge_weights = (
+            None if edge_weights is None else np.asarray(edge_weights, dtype=float)
+        )
+        if self.edge_weights is not None:
+            if self.edge_weights.shape != (self.n_edges,):
+                raise ValueError(
+                    f"edge_weights has shape {self.edge_weights.shape}; there are "
+                    f"{self.n_edges} lateral edges"
+                )
+            if (self.edge_weights < 0).any():
+                raise ValueError("edge_weights must be non-negative")
         self.distance_weighted = distance_weighted
         utils.set_kwargs(self, **kwargs)
+
+    @property
+    def lateral_edges(self) -> np.ndarray:
+        """Node pairs the lateral gradient differences: ``edges`` if given, else the triangulation's.
+
+        Returns
+        -------
+        (n_edges, 2) numpy.ndarray of int
+        """
+        return self.mesh_radial._edges if self.edges is None else self.edges
+
+    @property
+    def average_node_to_lateral_edge(self) -> sp.csr_matrix:
+        """Average from the lateral nodes to the lateral edges, (n_edges, n_nodes)."""
+        if self.edges is None:
+            return self.mesh_radial.average_node_to_edge
+        rows = np.repeat(np.arange(self.n_edges), 2)
+        return sp.csr_matrix(
+            (np.full(2 * self.n_edges, 0.5), (rows, self.edges.reshape(-1))),
+            shape=(self.n_edges, self.n_nodes),
+        )
 
     @property
     def distance_weighted(self) -> bool:
@@ -77,7 +123,7 @@ class LCRegularizationMesh(RegularizationMesh):
                     f"locations has {xy.shape[0]} rows; the lateral mesh has "
                     f"{self.n_nodes} nodes"
                 )
-            edges = self.mesh_radial._edges
+            edges = self.lateral_edges
             lengths = np.linalg.norm(xy[edges[:, 1]] - xy[edges[:, 0]], axis=1)
             if np.any(lengths <= 0):
                 raise ValueError("lateral mesh has a zero-length edge (duplicate sounding positions)")
@@ -216,14 +262,12 @@ class LCRegularizationMesh(RegularizationMesh):
 
     @property
     def nodal_gradient_stencil(self) -> sp.csr_matrix:
-        ind_ptr = 2 * np.arange(self.mesh_radial.n_edges + 1)
-        col_inds = self.mesh_radial._edges.reshape(-1)
-        Aijs = (
-            np.ones(self.mesh_radial.n_edges, dtype=float)[:, None] * [-1, 1]
-        ).reshape(-1)
+        ind_ptr = 2 * np.arange(self.n_edges + 1)
+        col_inds = self.lateral_edges.reshape(-1)
+        Aijs = (np.ones(self.n_edges, dtype=float)[:, None] * [-1, 1]).reshape(-1)
 
         return sp.csr_matrix(
-            (Aijs, col_inds, ind_ptr), shape=(self.mesh_radial.n_edges, self.n_nodes)
+            (Aijs, col_inds, ind_ptr), shape=(self.n_edges, self.n_nodes)
         )
 
     @property
@@ -236,6 +280,8 @@ class LCRegularizationMesh(RegularizationMesh):
             grad = self.nodal_gradient_stencil
             if self.distance_weighted:
                 grad = utils.sdiag(1.0 / self.edge_lengths) @ grad
+            if self.edge_weights is not None:
+                grad = utils.sdiag(np.sqrt(self.edge_weights)) @ grad
             self._cell_gradient_r = (
                 self.Paer.T * sp.kron(grad, utils.speye(self.nz)) * self.Pac
             )
@@ -248,7 +294,7 @@ class LCRegularizationMesh(RegularizationMesh):
 
         """
         if getattr(self, "_aveCC2Fr", None) is None:
-            ave = self.mesh_radial.average_node_to_edge
+            ave = self.average_node_to_lateral_edge
             self._aveCC2Fr = self.Paer.T * sp.kron(ave, utils.speye(self.nz)) * self.Pac
         return self._aveCC2Fr
 
@@ -373,7 +419,7 @@ class LCRegularizationMesh(RegularizationMesh):
         Number of edges of the 2D simplex mesh
         """
         if getattr(self, "_n_edges", None) is None:
-            self._n_edges = self.mesh_radial.n_edges
+            self._n_edges = len(self.lateral_edges)
         return self._n_edges
 
     @property
@@ -453,7 +499,7 @@ class LCRegularizationMesh(RegularizationMesh):
         """
 
         if getattr(self, "_aveFr2CC", None) is None:
-            ave = self.mesh_radial.average_node_to_edge.T
+            ave = self.average_node_to_lateral_edge.T
             self._aveFr2CC = self.Pac.T * sp.kron(ave, utils.speye(self.nz)) * self.Paer
         return self._aveFr2CC
 
