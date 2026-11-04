@@ -739,10 +739,12 @@ class XYZSystem(object):
         cluster_opts['startmodel__lateral_median'] = 0
         cluster_opts['validate'] = False
         cluster_opts['doi__enable'] = False  # only the start model is used
-        cluster_opts['regularization__alpha_r'] = 0
-        # No lateral links between medoids: drop a lateral length or line split the parent
-        # was given, which would disagree with alpha_r 0.
-        for key in ('L_r', 'alpha_r_inline', 'L_inline', 'alpha_r_otherline', 'L_otherline'):
+        # No lateral links between medoids: every lateral alpha 0, and the lengths the parent
+        # was given dropped, since they would disagree with it. (An option set to None
+        # means "not given", so the default lengths would come back.)
+        for key in ('alpha_r', 'alpha_r_inline', 'alpha_r_otherline'):
+            cluster_opts['regularization__' + key] = 0
+        for key in ('L_r', 'L_inline', 'L_otherline'):
             cluster_opts['regularization__' + key] = None
         cluster_opts['sounding_filter'] = raw_medoid_indices
         for key, val in self.options.items():
@@ -843,28 +845,29 @@ class XYZSystem(object):
 
     Accepted only so that saved parameter sets that carry it still run: true is ignored with a
     warning, false stops the run. To be removed; see docs/plans/drop-distance-weighted.md."""
-    regularization__alpha_r_inline: float = None
+    regularization__alpha_r_inline: float = 25.
     """Lateral weight of the links along each flight line (YmerFlow/simpeg#31).
 
-    Setting this or alpha_r_otherline, or one of their lengths, splits the lateral smoothness in
-    two kinds of link. Inline links join consecutive soundings of the same line in flight order
-    (by along-line distance, xdist, or by time where there is none). Otherline links are the
-    Delaunay edges between soundings on different lines; Delaunay edges between two soundings of
-    the same line are left out, since the inline chain replaces them. A tie line is simply
-    another line, so a crossing is a short otherline link. The weight not set defaults to
-    alpha_r. Needs a line column. With both unset, the lateral smoothness is alpha_r on every
-    Delaunay edge, as before."""
-    regularization__L_inline: length_scale_of("alpha_r_inline") = None
+    The lateral smoothness has two kinds of link, each with its own weight. Inline links join
+    consecutive soundings of the same line in flight order (by along-line distance, xdist, or by
+    time where there is none). Otherline links are the Delaunay edges between soundings on
+    different lines; Delaunay edges between two soundings of the same line are left out, since
+    the inline chain replaces them. A tie line is simply another line, so a crossing is a short
+    otherline link. Both default to 25 (L 500 m at alpha_s 1e-4), so by default every link has
+    the same length scale. Needs a line column and an xdist or timestamp column. Both 0 leaves
+    no lateral smoothness."""
+    regularization__L_inline: length_scale_of("alpha_r_inline") = 500.
     "Length scale of alpha_r_inline, in the CRS linear unit: alpha_r_inline = alpha_s * L_inline**2. Give either one; see L_r."
-    regularization__alpha_r_otherline: float = None
+    regularization__alpha_r_otherline: float = 25.
     """Lateral weight of the links between flight lines; see alpha_r_inline.
 
     The pull a sounding feels from parallel lines a distance l away is about
     4 * (L_otherline / l)**2 relative to the smallness, so holding lines 2 km apart together
     takes L_otherline of the order of a kilometer: at 100 m the lines are effectively
-    independent. 0 inverts each line on its own, all lines sharing one beta schedule and one
-    stopping rule."""
-    regularization__L_otherline: length_scale_of("alpha_r_otherline") = None
+    independent, and at the default 500 m lines 2 km apart pull on each other at about a
+    quarter of the smallness. 0 inverts each line on its own, all lines sharing one beta
+    schedule and one stopping rule."""
+    regularization__L_otherline: length_scale_of("alpha_r_otherline") = 500.
     "Length scale of alpha_r_otherline, in the CRS linear unit: alpha_r_otherline = alpha_s * L_otherline**2. Give either one; see L_r."
 
     def _given(self, name):

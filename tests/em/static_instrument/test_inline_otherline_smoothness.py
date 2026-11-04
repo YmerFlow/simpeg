@@ -108,8 +108,10 @@ def test_chords_of_a_curving_line_are_left_out():
     x, y = 300 * np.cos(angle), 300 * np.sin(angle)
     xdist = 300 * angle
     xyz = make_xyz(x, y, np.ones(9, int), xdist=xdist)
-    assert len(links(reg_of(xyz))) > 8                     # Delaunay alone has chords
-    got = links(reg_of(xyz, regularization__L_inline=100.0))
+    tri = Delaunay(np.c_[x, y]).simplices
+    edges = {tuple(sorted(p)) for s in tri for p in ((s[0], s[1]), (s[1], s[2]), (s[0], s[2]))}
+    assert len(edges) > 8                                        # Delaunay alone has chords
+    got = links(reg_of(xyz))
     assert set(got) == chain(xyz)
 
 
@@ -122,14 +124,18 @@ def test_time_orders_a_line_without_along_line_distance():
     assert set(got) == chain(xyz, by="timestamp") == {(1, 3), (0, 3), (0, 2), (5, 7), (4, 7), (4, 6)}
 
 
-def test_unset_keeps_the_triangulation_and_one_alpha_r():
+def test_by_default_both_kinds_of_link_are_500_m():
     xyz = parallel_lines()
-    for opts, alpha_r in (({}, 25.0), (dict(regularization__alpha_r=4.0), 4.0),
-                          (dict(regularization__L_r=100.0), 1.0)):
-        reg = reg_of(xyz, **opts)
-        mesh = reg.regularization_mesh
-        assert mesh.edges is None and mesh.edge_weights is None
-        assert reg.alpha_r == alpha_r
+    got = links(reg_of(xyz))
+    assert set(got) == chain(xyz) | delaunay_between_lines(xyz)
+    np.testing.assert_allclose(list(got.values()), 25.0)            # 1e-4 * 500**2
+
+
+def test_all_lateral_alphas_zero_leaves_no_lateral_links():
+    """How the clustered start's medoid inversions switch the lateral smoothness off."""
+    zero = dict(regularization__alpha_r=0, regularization__alpha_r_inline=0,
+                regularization__alpha_r_otherline=0)
+    assert links(reg_of(parallel_lines(), **zero)) == {}
 
 
 # ── alpha_r_otherline = 0 ────────────────────────────────────────────────────
@@ -189,18 +195,19 @@ def test_parameters_set_on_a_subclass_count_as_given():
         System(parallel_lines()).smoothness_weights()
 
 
-def test_options_override_a_subclass_length_as_the_cluster_start_model_does():
+def test_options_override_subclass_lengths_as_the_cluster_start_model_does():
     class System(XYZSystem):
-        regularization__L_r = 200.0
-    w = System(parallel_lines(), regularization__alpha_r=0,
-               regularization__L_r=None).smoothness_weights()
-    assert w["alpha_r"] == 0 and not w["split"]
+        regularization__L_inline = 200.0
+    zero = {"regularization__" + k: 0 for k in ("alpha_r", "alpha_r_inline", "alpha_r_otherline")}
+    no_length = {"regularization__" + k: None for k in ("L_r", "L_inline", "L_otherline")}
+    w = System(parallel_lines(), **zero, **no_length).smoothness_weights()
+    assert (w["alpha_r"], w["alpha_r_inline"], w["alpha_r_otherline"]) == (0, 0, 0)
 
 
-def test_the_weight_not_set_defaults_to_alpha_r():
-    w = weights(regularization__L_inline=100.0, regularization__alpha_r=9.0)
-    assert w["split"]
-    assert (w["alpha_r_otherline"], w["L_otherline"]) == pytest.approx((9.0, 300.0))
+def test_setting_one_kind_of_link_leaves_the_other_at_its_default():
+    w = weights(regularization__L_inline=100.0)
+    assert (w["alpha_r_inline"], w["L_inline"]) == pytest.approx((1.0, 100.0))
+    assert (w["alpha_r_otherline"], w["L_otherline"]) == pytest.approx((25.0, 500.0))
 
 
 def resolved(w):
@@ -211,7 +218,9 @@ def resolved(w):
 def test_defaults_are_500_m_lateral_and_50_m_vertical():
     w = weights()
     assert resolved(w) == pytest.approx((25.0, 500.0, 0.25, 50.0))
-    assert not w["split"]
+    assert w["split"]
+    assert (w["alpha_r_inline"], w["L_inline"], w["alpha_r_otherline"], w["L_otherline"]) == \
+        pytest.approx((25.0, 500.0, 25.0, 500.0))
 
 
 @pytest.mark.parametrize("opts, expected", [
@@ -273,13 +282,15 @@ def test_the_run_log_prints_every_alpha_with_its_length(capsys):
             "alpha_r_otherline 100 (L_otherline 1000 m), alpha_z 0.25 (L_z 50 m)") in capsys.readouterr().out
     xyz = parallel_lines()
     xyz.model_info["projection"] = 2258                          # a State Plane CRS in US survey feet
-    reg_of(xyz, regularization__L_r=300.0)
-    assert "alpha_r 9 (L_r 300 ft)" in capsys.readouterr().out
+    reg_of(xyz, regularization__L_inline=300.0)
+    assert "alpha_r_inline 9 (L_inline 300 ft)" in capsys.readouterr().out
     reg_of(parallel_lines())                                     # the defaults
-    assert ("##SMOOTHNESS## alpha_s 0.0001, alpha_r 25 (L_r 500 m), alpha_z 0.25 (L_z 50 m)\n"
+    assert ("##SMOOTHNESS## alpha_s 0.0001, alpha_r_inline 25 (L_inline 500 m), "
+            "alpha_r_otherline 25 (L_otherline 500 m), alpha_z 0.25 (L_z 50 m)\n"
             in capsys.readouterr().out)
     reg_of(parallel_lines(), regularization__alpha_s=0.0)        # alpha_s 0: no lengths
-    assert "##SMOOTHNESS## alpha_s 0, alpha_r 25, alpha_z 0.25\n" in capsys.readouterr().out
+    assert ("##SMOOTHNESS## alpha_s 0, alpha_r_inline 25, alpha_r_otherline 25, alpha_z 0.25\n"
+            in capsys.readouterr().out)
 
 
 LENGTHS = {"L_r": "alpha_r", "L_z": "alpha_z", "L_inline": "alpha_r_inline",
