@@ -21,11 +21,11 @@ EDGES = np.array([[0, 1], [1, 2], [3, 4], [1, 4]])       # two chains and one li
 WEIGHTS = np.array([1.0, 1.0, 1.0, 400.0])
 
 
-def make_mesh(edges=None, edge_weights=None, distance_weighted=True):
+def make_mesh(edges=None, edge_weights=None):
     tri = Delaunay(XY)
     return LCRegularizationMesh(
         [SimplexMesh(tri.points, tri.simplices), set_mesh_1d(LAYERS)],
-        distance_weighted=distance_weighted, locations=XY,
+        locations=XY,
         edges=edges, edge_weights=edge_weights)
 
 

@@ -1,9 +1,10 @@
 """Lateral smoothing along a line and between lines (YmerFlow/simpeg#31).
 
-Setting ``regularization__alpha_r_inline`` / ``alpha_r_otherline`` (or their lengths
-``L_inline`` / ``L_otherline``) splits the lateral links in two: a chain along each line in
-flight order, and the Delaunay edges between lines. Every alpha can also be given as a length,
-alpha = alpha_s * L**2. These tests build the regularization of a bare XYZSystem from sounding
+The lateral links are split in two: a chain along each line in flight order, weighted by
+``regularization__alpha_r_inline`` (or its length ``L_inline``), and the Delaunay edges between
+lines, weighted by ``alpha_r_otherline`` (``L_otherline``). Data without a line column or flight
+order fall back to the triangulation with ``alpha_r``. Every alpha can also be given as a
+length, alpha = alpha_s * L**2. These tests build the regularization of a bare XYZSystem from sounding
 positions alone; no data or simulation is needed.
 """
 
@@ -21,7 +22,6 @@ from simpeg.electromagnetics.utils.static_instrument.base import XYZSystem
 
 LAYERS = np.full(5, 10.0)                       # thicknesses [m], so 6 layers
 NZ = len(LAYERS) + 1
-DW = dict(regularization__distance_weighted=True, regularization__alpha_s=1e-4)
 
 
 def make_xyz(x, y, line, xdist=None, timestamp=None, epsg=32632):
@@ -61,13 +61,15 @@ def chain(xyz, by="xdist"):
     return pairs
 
 
+def delaunay_edges(xyz):
+    tri = Delaunay(xyz.flightlines[["x", "y"]].to_numpy())
+    return {tuple(sorted((int(a), int(b)))) for s in tri.simplices
+            for a, b in ((s[0], s[1]), (s[1], s[2]), (s[0], s[2]))}
+
+
 def delaunay_between_lines(xyz):
-    fl = xyz.flightlines
-    tri = Delaunay(fl[["x", "y"]].to_numpy())
-    line = fl["line_no"].to_numpy()
-    pairs = {tuple(sorted((int(a), int(b)))) for s in tri.simplices
-             for a, b in ((s[0], s[1]), (s[1], s[2]), (s[0], s[2]))}
-    return {p for p in pairs if line[p[0]] != line[p[1]]}
+    line = xyz.flightlines["line_no"].to_numpy()
+    return {p for p in delaunay_edges(xyz) if line[p[0]] != line[p[1]]}
 
 
 def reg_of(xyz, **opts):
@@ -78,7 +80,7 @@ def reg_of(xyz, **opts):
 
 def test_parallel_lines_get_a_chain_each_and_the_delaunay_edges_between():
     xyz = parallel_lines()
-    reg = reg_of(xyz, **DW, regularization__L_inline=100.0, regularization__L_otherline=1000.0)
+    reg = reg_of(xyz, regularization__L_inline=100.0, regularization__L_otherline=1000.0)
     line = xyz.flightlines["line_no"].to_numpy()
     got = links(reg)
     inline = {p: w for p, w in got.items() if line[p[0]] == line[p[1]]}
@@ -95,7 +97,7 @@ def test_tie_crossing_does_not_break_either_lines_chain():
     yt = np.arange(9) * 25.0 - 100.0                             # tie along y, crossing at x = 112.5
     xyz = make_xyz(np.r_[xa, np.full(9, 112.5)], np.r_[np.zeros(9), yt],
                    np.repeat([1, 2], 9), xdist=np.r_[xa, yt + 100.0])
-    got = links(reg_of(xyz, **DW, regularization__L_inline=100.0, regularization__L_otherline=1000.0))
+    got = links(reg_of(xyz, regularization__L_inline=100.0, regularization__L_otherline=1000.0))
     line = xyz.flightlines["line_no"].to_numpy()
     assert {p for p in got if line[p[0]] == line[p[1]]} == chain(xyz)
     assert (4, 5) in got                                         # 100 m -> 125 m on the line, past the tie
@@ -109,8 +111,10 @@ def test_chords_of_a_curving_line_are_left_out():
     x, y = 300 * np.cos(angle), 300 * np.sin(angle)
     xdist = 300 * angle
     xyz = make_xyz(x, y, np.ones(9, int), xdist=xdist)
-    assert len(links(reg_of(xyz, **DW))) > 8                     # Delaunay alone has chords
-    got = links(reg_of(xyz, **DW, regularization__L_inline=100.0))
+    tri = Delaunay(np.c_[x, y]).simplices
+    edges = {tuple(sorted(p)) for s in tri for p in ((s[0], s[1]), (s[1], s[2]), (s[0], s[2]))}
+    assert len(edges) > 8                                        # Delaunay alone has chords
+    got = links(reg_of(xyz))
     assert set(got) == chain(xyz)
 
 
@@ -119,17 +123,22 @@ def test_time_orders_a_line_without_along_line_distance():
     t = pd.Timestamp("2026-01-01") + pd.to_timedelta(x / 25.0, unit="s")
     xyz = make_xyz(np.r_[x, x], np.r_[np.zeros(4), np.full(4, 2000.0)], np.repeat([1, 2], 4),
                    timestamp=np.r_[t, t])
-    got = links(reg_of(xyz, **DW, regularization__L_inline=100.0, regularization__alpha_r_otherline=0))
+    got = links(reg_of(xyz, regularization__L_inline=100.0, regularization__alpha_r_otherline=0))
     assert set(got) == chain(xyz, by="timestamp") == {(1, 3), (0, 3), (0, 2), (5, 7), (4, 7), (4, 6)}
 
 
-def test_unset_keeps_the_triangulation_and_one_alpha_r():
+def test_by_default_both_kinds_of_link_are_500_m():
     xyz = parallel_lines()
-    for opts, alpha_r in ((DW, 1.0), (dict(DW, regularization__alpha_r=4.0), 4.0), ({}, 1.0)):
-        reg = reg_of(xyz, **opts)
-        mesh = reg.regularization_mesh
-        assert mesh.edges is None and mesh.edge_weights is None
-        assert reg.alpha_r == alpha_r
+    got = links(reg_of(xyz))
+    assert set(got) == chain(xyz) | delaunay_between_lines(xyz)
+    np.testing.assert_allclose(list(got.values()), 25.0)            # 1e-4 * 500**2
+
+
+def test_all_lateral_alphas_zero_leaves_no_lateral_links():
+    """How the clustered start's medoid inversions switch the lateral smoothness off."""
+    zero = dict(regularization__alpha_r=0, regularization__alpha_r_inline=0,
+                regularization__alpha_r_otherline=0)
+    assert links(reg_of(parallel_lines(), **zero)) == {}
 
 
 # ── alpha_r_otherline = 0 ────────────────────────────────────────────────────
@@ -138,7 +147,7 @@ def test_otherline_zero_is_each_line_regularized_on_its_own():
     """The joint objective is the sum of the per-line ones, so with the same beta (and the
     misfit separable by sounding anyway) the joint inversion has the per-line minimizers."""
     xyz = parallel_lines(shuffle=False)
-    opts = dict(DW, regularization__L_inline=100.0, regularization__alpha_r_otherline=0.0)
+    opts = dict(regularization__L_inline=100.0, regularization__alpha_r_otherline=0.0)
     fl = xyz.flightlines
     a, b = (make_xyz(g.x, g.y, g.line_no.to_numpy(), xdist=g.xdist.to_numpy())
             for _, g in fl.groupby("line_no"))
@@ -156,7 +165,7 @@ def test_otherline_zero_is_each_line_regularized_on_its_own():
 # ── Alphas and lengths ───────────────────────────────────────────────────────
 
 def weights(**opts):
-    return XYZSystem(parallel_lines(), **dict(DW, **opts)).smoothness_weights()
+    return XYZSystem(parallel_lines(), **opts).smoothness_weights()
 
 
 @pytest.mark.parametrize("opts, key, alpha, length", [
@@ -186,56 +195,114 @@ def test_parameters_set_on_a_subclass_count_as_given():
         regularization__alpha_r = 1.0
         regularization__L_r = 200.0
     with pytest.raises(ValueError, match="regularization__alpha_r = 1 and regularization__L_r = 200"):
-        System(parallel_lines(), **DW).smoothness_weights()
+        System(parallel_lines()).smoothness_weights()
 
 
-def test_options_override_a_subclass_length_as_the_cluster_start_model_does():
+def test_options_override_subclass_lengths_as_the_cluster_start_model_does():
     class System(XYZSystem):
-        regularization__L_r = 200.0
-    w = System(parallel_lines(), **DW, regularization__alpha_r=0,
-               regularization__L_r=None).smoothness_weights()
-    assert w["alpha_r"] == 0 and not w["split"]
+        regularization__L_inline = 200.0
+    zero = {"regularization__" + k: 0 for k in ("alpha_r", "alpha_r_inline", "alpha_r_otherline")}
+    no_length = {"regularization__" + k: None for k in ("L_r", "L_inline", "L_otherline")}
+    w = System(parallel_lines(), **zero, **no_length).smoothness_weights()
+    assert (w["alpha_r"], w["alpha_r_inline"], w["alpha_r_otherline"]) == (0, 0, 0)
 
 
-def test_the_weight_not_set_defaults_to_alpha_r():
-    w = weights(regularization__L_inline=100.0, regularization__alpha_r=9.0)
+def test_setting_one_kind_of_link_leaves_the_other_at_its_default():
+    w = weights(regularization__L_inline=100.0)
+    assert (w["alpha_r_inline"], w["L_inline"]) == pytest.approx((1.0, 100.0))
+    assert (w["alpha_r_otherline"], w["L_otherline"]) == pytest.approx((25.0, 500.0))
+
+
+def resolved(w):
+    """The resolved alpha_r, L_r, alpha_z, L_z."""
+    return w["alpha_r"], w["L_r"], w["alpha_z"], w["L_z"]
+
+
+def test_defaults_are_500_m_lateral_and_50_m_vertical():
+    w = weights()
+    assert resolved(w) == pytest.approx((25.0, 500.0, 0.25, 50.0))
     assert w["split"]
-    assert (w["alpha_r_otherline"], w["L_otherline"]) == pytest.approx((9.0, 300.0))
+    assert (w["alpha_r_inline"], w["L_inline"], w["alpha_r_otherline"], w["L_otherline"]) == \
+        pytest.approx((25.0, 500.0, 25.0, 500.0))
 
 
-@pytest.mark.parametrize("opts, match", [
-    (dict(regularization__alpha_r_inline=1.0), "need regularization__distance_weighted"),
-    (dict(regularization__L_otherline=1000.0), "needs regularization__distance_weighted"),
-    (dict(regularization__L_z=25.0), "needs regularization__distance_weighted"),
+@pytest.mark.parametrize("opts, expected", [
+    # alpha_s alone: the default lengths hold and the alphas follow
+    (dict(regularization__alpha_s=4e-4), (100.0, 500.0, 1.0, 50.0)),
+    # one of a pair: the other follows it, not its own default
+    (dict(regularization__alpha_z=1.0), (25.0, 500.0, 1.0, 100.0)),
+    (dict(regularization__alpha_s=4e-4, regularization__alpha_r=25.0), (25.0, 250.0, 1.0, 50.0)),
 ])
-def test_lengths_and_the_split_need_distance_weighting(opts, match):
-    with pytest.raises(ValueError, match=match):
-        XYZSystem(parallel_lines(), **opts).smoothness_weights()
+def test_defaults_are_never_given(opts, expected):
+    assert resolved(weights(**opts)) == pytest.approx(expected)
 
 
-def test_the_split_needs_a_line_column_and_flight_order():
-    xyz = parallel_lines()
-    no_line = make_xyz(xyz.flightlines.x, xyz.flightlines.y, None, xdist=xyz.flightlines.xdist)
+FORM_DEFAULTS = dict(regularization__alpha_r=25.0, regularization__L_r=500.0,
+                     regularization__alpha_z=0.25, regularization__L_z=50.0)
+
+
+@pytest.mark.parametrize("changed, expected", [
+    (dict(regularization__alpha_s=4e-4), (100.0, 500.0, 1.0, 50.0)),     # the lengths hold
+    (dict(regularization__alpha_r=100.0), (100.0, 1000.0, 0.25, 50.0)),  # the alpha set wins
+    (dict(regularization__L_z=25.0), (25.0, 500.0, 0.0625, 25.0)),       # the length set wins
+])
+def test_a_form_sending_every_default_does_not_disagree(changed, expected):
+    """A form submits every field; a pair member left at its default gives way to the other."""
+    assert resolved(weights(**dict(FORM_DEFAULTS, **changed))) == pytest.approx(expected)
+
+
+def test_alpha_s_zero_keeps_the_default_alphas_without_lengths():
+    assert resolved(weights(regularization__alpha_s=0.0)) == (25.0, None, 0.25, None)
+
+
+def test_deprecated_distance_weighted_true_is_ignored_with_a_warning():
+    with pytest.warns(FutureWarning, match="drop-distance-weighted"):
+        w = weights(regularization__distance_weighted=True)
+    assert w == weights()
+
+
+def test_deprecated_distance_weighted_false_stops_the_run():
+    with pytest.raises(ValueError, match="distance weighting is always on"):
+        weights(regularization__distance_weighted=False)
+
+
+def test_without_a_line_column_or_flight_order_the_links_fall_back_to_the_triangulation(capsys):
+    fl = parallel_lines().flightlines
+    no_line = make_xyz(fl.x, fl.y, None, xdist=fl.xdist)
     del no_line.flightlines["line_no"]
-    with pytest.raises(ValueError, match="needs a line column"):
-        reg_of(no_line, **DW, regularization__L_inline=100.0)
-    no_order = make_xyz(xyz.flightlines.x, xyz.flightlines.y, xyz.flightlines.line_no)
-    with pytest.raises(ValueError, match="flight order"):
-        reg_of(no_order, **DW, regularization__L_inline=100.0)
+    no_order = make_xyz(fl.x, fl.y, fl.line_no)
+    for xyz, missing in ((no_line, "line"),
+                         (no_order, "along-line distance (xdist) or time (timestamp)")):
+        system = XYZSystem(xyz, regularization__L_r=200.0)
+        reg = system.make_regularization(LAYERS)
+        assert links(reg) == dict.fromkeys(delaunay_edges(xyz), 1.0)
+        assert reg.alpha_r == pytest.approx(4.0)
+        out = capsys.readouterr().out
+        assert f"The data have no {missing} column" in out
+        assert "alpha_r 4 (L_r 200 m)" in out
+        assert system.smoothness_report == {"lateral_links": "triangulation"}
+    system = XYZSystem(parallel_lines())
+    system.make_regularization(LAYERS)
+    assert system.smoothness_report == {"lateral_links": "inline_otherline"}
 
 
 # ── The run log and the schema ───────────────────────────────────────────────
 
 def test_the_run_log_prints_every_alpha_with_its_length(capsys):
-    reg_of(parallel_lines(), **DW, regularization__L_inline=100.0, regularization__L_otherline=1000.0)
+    reg_of(parallel_lines(), regularization__L_inline=100.0, regularization__L_otherline=1000.0)
     assert ("##SMOOTHNESS## alpha_s 0.0001, alpha_r_inline 1 (L_inline 100 m), "
-            "alpha_r_otherline 100 (L_otherline 1000 m), alpha_z 1 (L_z 100 m)") in capsys.readouterr().out
+            "alpha_r_otherline 100 (L_otherline 1000 m), alpha_z 0.25 (L_z 50 m)") in capsys.readouterr().out
     xyz = parallel_lines()
     xyz.model_info["projection"] = 2258                          # a State Plane CRS in US survey feet
-    reg_of(xyz, **DW, regularization__L_r=300.0)
-    assert "alpha_r 9 (L_r 300 ft)" in capsys.readouterr().out
-    reg_of(parallel_lines())                                     # distance weighting off: no lengths
-    assert "##SMOOTHNESS## alpha_s 0.0001, alpha_r 1, alpha_z 1\n" in capsys.readouterr().out
+    reg_of(xyz, regularization__L_inline=300.0)
+    assert "alpha_r_inline 9 (L_inline 300 ft)" in capsys.readouterr().out
+    reg_of(parallel_lines())                                     # the defaults
+    assert ("##SMOOTHNESS## alpha_s 0.0001, alpha_r_inline 25 (L_inline 500 m), "
+            "alpha_r_otherline 25 (L_otherline 500 m), alpha_z 0.25 (L_z 50 m)\n"
+            in capsys.readouterr().out)
+    reg_of(parallel_lines(), regularization__alpha_s=0.0)        # alpha_s 0: no lengths
+    assert ("##SMOOTHNESS## alpha_s 0, alpha_r_inline 25, alpha_r_otherline 25, alpha_z 0.25\n"
+            in capsys.readouterr().out)
 
 
 LENGTHS = {"L_r": "alpha_r", "L_z": "alpha_z", "L_inline": "alpha_r_inline",
@@ -258,3 +325,4 @@ def test_the_schema_links_each_length_to_its_sibling_alpha():
         assert group[length]["type"] == "number"
         assert group[length]["x-length-scale"] == {"alpha": alpha, "alpha_s": "alpha_s"}
         assert alpha in group and "alpha_s" in group
+    assert group["distance_weighted"]["deprecated"] is True

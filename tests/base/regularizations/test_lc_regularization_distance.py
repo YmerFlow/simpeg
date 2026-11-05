@@ -1,9 +1,8 @@
 """Distance weighting in the laterally constrained regularization (ymerflow-business#119).
 
-With ``distance_weighted=False`` (the default) every triangulation link is a plain
-difference whatever its length, so on a survey with sounding spacing much smaller than
-line spacing, soundings are tied to the next line as strongly as to their neighbours.
-With ``distance_weighted=True`` each difference is divided by the distance it spans.
+Each lateral difference is divided by the length of its link and each vertical one by the
+distance between layer centers. Without that, on a survey with sounding spacing much smaller
+than line spacing, soundings were tied to the next line as strongly as to their neighbors.
 """
 
 import numpy as np
@@ -30,13 +29,12 @@ def two_lines():
     return xy, line
 
 
-def make_mesh(xy, distance_weighted, locations=None, active_edges=None):
+def make_mesh(xy, locations=None, active_edges=None):
     tri = Delaunay(xy)
     radial = SimplexMesh(tri.points, tri.simplices)
     vertical = set_mesh_1d(LAYERS)
     return LCRegularizationMesh(
         [radial, vertical],
-        distance_weighted=distance_weighted,
         locations=locations,
         active_edges=active_edges,
     )
@@ -49,20 +47,9 @@ def model_from(fn, xy):
 
 
 class TestOperators:
-    def test_default_is_unweighted_stencil(self):
-        xy, _ = two_lines()
-        mesh = make_mesh(xy, distance_weighted=False)
-        nz = mesh.nz
-        expected_r = sp.kron(mesh.nodal_gradient_stencil, utils.speye(nz))
-        expected_z = sp.kron(
-            utils.speye(mesh.n_nodes), mesh.mesh_vertical.stencil_cell_gradient
-        )
-        assert abs(mesh.cell_gradient_r - expected_r).max() == 0
-        assert abs(mesh.cell_gradient_z - expected_z).max() == 0
-
     def test_lateral_gradient_divides_by_edge_length(self):
         xy, _ = two_lines()
-        mesh = make_mesh(xy, distance_weighted=True)
+        mesh = make_mesh(xy)
         rng = np.random.default_rng(0)
         m = rng.standard_normal(mesh.nC)
         got = (mesh.cell_gradient_r @ m).reshape(mesh.n_edges, mesh.nz)
@@ -77,7 +64,7 @@ class TestOperators:
 
     def test_vertical_gradient_divides_by_layer_spacing(self):
         xy, _ = two_lines()
-        mesh = make_mesh(xy, distance_weighted=True)
+        mesh = make_mesh(xy)
         slope = 0.03  # per metre
         m = model_from(lambda p, zc: slope * zc, xy)
         g = (mesh.cell_gradient_z @ m).reshape(mesh.n_nodes, -1)
@@ -92,7 +79,7 @@ class TestOperators:
         tri = Delaunay(jittered)
         radial = SimplexMesh(tri.points, tri.simplices)
         mesh = LCRegularizationMesh(
-            [radial, set_mesh_1d(LAYERS)], distance_weighted=True, locations=xy
+            [radial, set_mesh_1d(LAYERS)], locations=xy
         )
         e = radial._edges
         np.testing.assert_allclose(
@@ -101,16 +88,9 @@ class TestOperators:
 
     def test_cell_distances_z_has_one_value_per_z_face(self):
         xy, _ = two_lines()
-        for weighted in (False, True):
-            mesh = make_mesh(xy, distance_weighted=weighted)
-            assert mesh.cell_distances_z.shape[0] == mesh.cell_gradient_z.shape[0]
+        mesh = make_mesh(xy)
+        assert mesh.cell_distances_z.shape[0] == mesh.cell_gradient_z.shape[0]
 
-    def test_switching_the_flag_rebuilds_operators(self):
-        xy, _ = two_lines()
-        mesh = make_mesh(xy, distance_weighted=False)
-        unweighted = mesh.cell_gradient_r.copy()
-        mesh.distance_weighted = True
-        assert abs(mesh.cell_gradient_r - unweighted).max() > 0
 
 
 def invert_linear(mesh, m_true, alpha_s, alpha_r, alpha_z, beta=1.0, decay=20.0):
@@ -141,7 +121,7 @@ def cross_line_edges(mesh):
     return np.repeat(along, mesh.nz)
 
 
-def cross_line_smear(gap, weighted, alpha_r, alpha_z, alpha_s=1e-4, beta=1.0, decay=40.0):
+def cross_line_smear(gap, alpha_r, alpha_z, alpha_s=1e-4, beta=1.0, decay=40.0):
     """Largest deep-model change caused by the cross-line links, for lines `gap` apart.
 
     Two lines that differ only below 40 m. The result with all triangulation links is
@@ -153,10 +133,8 @@ def cross_line_smear(gap, weighted, alpha_r, alpha_z, alpha_s=1e-4, beta=1.0, de
     try:
         xy, _ = two_lines()
         m_true = model_from(lambda p, zc: np.where(zc > 40, 2.0 * (p[1] > 0), 0.0), xy)
-        mesh_all = make_mesh(xy, distance_weighted=weighted)
-        mesh_sep = make_mesh(
-            xy, distance_weighted=weighted, active_edges=cross_line_edges(mesh_all)
-        )
+        mesh_all = make_mesh(xy)
+        mesh_sep = make_mesh(xy, active_edges=cross_line_edges(mesh_all))
         args = dict(alpha_s=alpha_s, alpha_r=alpha_r, alpha_z=alpha_z, beta=beta, decay=decay)
         m_all = invert_linear(mesh_all, m_true, **args)
         m_sep = invert_linear(mesh_sep, m_true, **args)
@@ -166,30 +144,20 @@ def cross_line_smear(gap, weighted, alpha_r, alpha_z, alpha_s=1e-4, beta=1.0, de
         LINE_GAP = saved
 
 
-def test_unweighted_coupling_ignores_distance():
-    """The bug: lines 8 km apart are tied exactly as hard as lines 2 km apart."""
-    near = cross_line_smear(2000.0, weighted=False, alpha_r=1.0, alpha_z=1.0)
-    far = cross_line_smear(8000.0, weighted=False, alpha_r=1.0, alpha_z=1.0)
-    assert near > 0.1, f"expected visible smearing between the lines: {near:.3g}"
-    assert abs(far - near) / near < 0.01, f"unweighted coupling changed with distance: {near:.3g} vs {far:.3g}"
-
-
-def test_weighted_coupling_falls_with_distance():
-    """With the fix, at matched along-line strength (alpha_r = spacing**2, i.e. the same
-    per-link weight as alpha_r = 1 unweighted), coupling falls roughly as 1/distance**2."""
+def test_coupling_falls_with_distance():
+    """At matched along-line strength (alpha_r = spacing**2, the per-link weight the old
+    unweighted alpha_r = 1 had), coupling falls roughly as 1/distance**2; unweighted, it
+    measured 0.16 at both distances."""
     ar, az = SPACING**2, LAYERS[0] ** 2
-    near = cross_line_smear(2000.0, weighted=True, alpha_r=ar, alpha_z=az)
-    far = cross_line_smear(8000.0, weighted=True, alpha_r=ar, alpha_z=az)
-    unweighted = cross_line_smear(2000.0, weighted=False, alpha_r=1.0, alpha_z=1.0)
-    assert near < unweighted / 5
+    near = cross_line_smear(2000.0, alpha_r=ar, alpha_z=az)
+    far = cross_line_smear(8000.0, alpha_r=ar, alpha_z=az)
+    assert near < 0.03, f"lines 2 km apart smear too much: {near:.3g}"
     assert far < near / 8, f"4x the distance should cut coupling ~16x: {near:.3g} -> {far:.3g}"
 
 
-def test_weighted_length_scales_keep_lines_independent():
+def test_short_length_scales_keep_lines_independent():
     """At a 100 m lateral / 25 m vertical length scale (alpha_s 1e-4: alpha_r 1,
     alpha_z 0.0625), lines 2 km apart no longer influence each other."""
-    smear = cross_line_smear(2000.0, weighted=True, alpha_r=1.0, alpha_z=0.0625)
-    unweighted = cross_line_smear(2000.0, weighted=False, alpha_r=1.0, alpha_z=1.0)
-    # 0.01 in log10 resistivity is about 2%; measured 1.4e-3 against 0.16 unweighted.
+    smear = cross_line_smear(2000.0, alpha_r=1.0, alpha_z=0.0625)
+    # 0.01 in log10 resistivity is about 2%; measured 1.4e-3.
     assert smear < 0.01, f"lines 2 km apart still influence each other: {smear:.3g}"
-    assert smear < unweighted / 50
