@@ -1,6 +1,6 @@
 # Lateral smoothing along a line and between lines
 
-**State:** decided 2026-10-31; schema shape revised 2026-11-02 (group-object `x-format`, see section 2); decision 1 settled 2026-11-03; decision 8 open
+**State:** decided 2026-10-31; schema shape revised 2026-11-02 (group-object `x-format`, see section 2); decision 1 settled 2026-11-03; decision 3 changed 2026-11-03, with a fallback 2026-11-05; decision 8 open
 **Labels:** enhancement, inversion
 **Builds on:** #28 (distance-weighted lateral and vertical smoothness)
 
@@ -81,12 +81,11 @@ Alphas for a given length scale, at `alpha_s` = 1e-4, and the resulting pull fro
 | 1000 | 100 | 1.1 times smallness |
 | 2000 | 400 | 4.4 times smallness |
 
-### 3. When the new options apply
+### 3. When the split applies
 
-- The split applies only when either new weight is set, by its alpha or its length. With both unset, #28's behavior is unchanged: Delaunay links and one `alpha_r`.
-- With one set, the other defaults to `alpha_r`.
-- Both need distance weighting, since without it they are per-link weights with no length. Since 2026-11-03 distance weighting is always on (ymerflow-business#119), so `regularization__distance_weighted` and this check are gone.
-- The `Line` column is required; without it the run stops before inverting.
+- Always, by default (decision 3, changed 2026-11-03): `L_inline` and `L_otherline` both default to 500 m, so every run splits the links.
+- Data without a `Line` column, or without the flight order within each line (an along-line distance, `xdist`, or a time, `timestamp`), fall back to #28's Delaunay links with one `alpha_r` (`L_r` 500 m). The run log says which column was missing, and the outputs' `model_info` records `lateral_links` as `inline_otherline` or `triangulation`. Data normalized by libaarhusxyz always have both columns.
+- Both weights need distance weighting, since without it they are per-link weights with no length. Since 2026-11-03 distance weighting is always on (ymerflow-business#119), so `regularization__distance_weighted` and this check are gone.
 
 ### 4. `alpha_r_otherline = 0`: lines inverted independently in one job
 
@@ -121,7 +120,7 @@ Measured for each: misfit per line, iterations, wall time, and the difference in
 |---|---|---|---|
 | 1 | Parameter form (source of truth) | A: alphas only in the schema, lengths derived in the widget and only printed in the report. B: lengths only. C: both `alpha_*` and `L_*` are schema members and submitted, each updating the other, backend resolves pairs. | **C, settled 2026-11-03** (ymerflow-business#119). Was C (2026-10-31), reopened 2026-11-02 because the group-widget convention makes A clean; C keeps lengths usable by non-form callers (MCP/CLI). Every alpha and its length carry defaults that give the same numbers at the default `alpha_s` 1e-4: `L_r`, `L_inline`, `L_otherline` 500 m with alpha 25, `L_z` 50 m with `alpha_z` 0.25. A default never counts as given: the member set wins and the other follows from alpha = alpha_s L^2 (section 2). |
 | 2 | Same-line Delaunay chords | A: leave them out; the inline chain replaces them. B: keep them as inline links. | A. Chords tie a curving line's soundings across the bend. |
-| 3 | Behavior with both new options unset | A: #28 unchanged. B: always use the inline chain and otherline links. | A, so existing runs reproduce. |
+| 3 | Behavior with both new options unset | A: #28 unchanged. B: always use the inline chain and otherline links. | **B, changed 2026-11-03** (ymerflow-business#119): the split is on by default, both kinds of link at 500 m, both pairs exposed with the same defaults. Was A. Data without a line column or flight order fall back to #28's links with `alpha_r` (settled 2026-11-05). Reproducing an earlier run is the environment's job: it pins the simpeg version. |
 | 4 | Distance weighting off | A: error if either new option is set. B: allow as per-link weights. | A. Without distance the two weights have no length meaning. Moot since 2026-11-03: distance weighting is always on (ymerflow-business#119). |
 | 5 | Test runs | The four above, or another set. | The four above. |
 | 6 | Length fields for the existing weights | A: add `L_z` and `L_r` beside `alpha_z` and `alpha_r`, linked the same way. B: only the two new weights get lengths. | A, so every smoothness setting reads the same way. |
