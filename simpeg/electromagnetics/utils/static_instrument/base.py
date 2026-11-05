@@ -806,17 +806,19 @@ class XYZSystem(object):
     default lengths give alpha_r 25 and alpha_z 0.25.
     """
     regularization__alpha_r = 25.
-    """Lateral smoothness weight: penalizes resistivity gradients between neighboring soundings.
+    """Lateral smoothness weight for data that cannot be split along and between lines.
 
-    The inversion links soundings by a Delaunay triangulation of their positions, and divides each
-    link's difference by the link's length (ymerflow-business#119). Lateral smoothness is therefore
-    a gradient, and a long link, such as one between flight lines kilometers apart, is weak next
-    to one between neighboring soundings on a line.
+    The lateral links are normally split along and between flight lines, each kind with its own
+    weight (alpha_r_inline, alpha_r_otherline). That needs a line column and the flight order
+    within each line, an along-line distance (xdist) or a time (timestamp) column; data
+    normalized by libaarhusxyz always have both. Data without either fall back to linking the
+    soundings by a Delaunay triangulation of their positions, every link weighted by alpha_r, and
+    the run log and the outputs' model_info (lateral_links) say so.
 
-    alpha_r is easier to read as its length scale, L_r = sqrt(alpha_r / alpha_s): the default 25
-    with alpha_s 1e-4 is L_r 500 m. A longer L_r smooths over longer distances, for laterally
-    continuous geology such as sedimentary basins; a shorter one allows sharper lateral changes.
-    alpha_r has no effect on vertical structure within a sounding; use alpha_z for that.
+    Each link's difference is divided by the link's length (ymerflow-business#119), so lateral
+    smoothness is a gradient and alpha_r is easier to read as its length scale,
+    L_r = sqrt(alpha_r / alpha_s): the default 25 with alpha_s 1e-4 is L_r 500 m. alpha_r has no
+    effect on vertical structure within a sounding; use alpha_z for that.
     """
     regularization__L_r: length_scale_of("alpha_r") = 500.
     """Length scale of alpha_r, in the CRS linear unit (m or ft): alpha_r = alpha_s * L_r**2.
@@ -854,8 +856,9 @@ class XYZSystem(object):
     different lines; Delaunay edges between two soundings of the same line are left out, since
     the inline chain replaces them. A tie line is simply another line, so a crossing is a short
     otherline link. Both default to 25 (L 500 m at alpha_s 1e-4), so by default every link has
-    the same length scale. Needs a line column and an xdist or timestamp column. Both 0 leaves
-    no lateral smoothness."""
+    the same length scale. Needs a line column and an xdist or timestamp column; without either,
+    the links fall back to the triangulation with alpha_r (see alpha_r). Both 0 leaves no lateral
+    smoothness."""
     regularization__L_inline: length_scale_of("alpha_r_inline") = 500.
     "Length scale of alpha_r_inline, in the CRS linear unit: alpha_r_inline = alpha_s * L_inline**2. Give either one; see L_r."
     regularization__alpha_r_otherline: float = 25.
@@ -884,9 +887,11 @@ class XYZSystem(object):
         -------
         dict
             ``alpha_s``; ``alpha_r``, ``L_r``; ``alpha_z``, ``L_z``; ``alpha_r_inline``,
-            ``L_inline``, ``alpha_r_otherline``, ``L_otherline`` (None unless the lateral
-            smoothness is split); ``split`` (bool). Lengths are in the CRS linear unit, None
-            where alpha_s is 0 (a length has no meaning then).
+            ``L_inline``, ``alpha_r_otherline``, ``L_otherline``; ``split`` (bool), whether
+            the data have the line and flight-order columns the split along and between lines
+            needs (otherwise the lateral links are the triangulation's, with ``alpha_r``).
+            Lengths are in the CRS linear unit, None where alpha_s is 0 (a length has no
+            meaning then).
 
         Raises
         ------
@@ -925,15 +930,23 @@ class XYZSystem(object):
         pair("alpha_z", "L_z")
         pair("alpha_r_inline", "L_inline")
         pair("alpha_r_otherline", "L_otherline")
-        w["split"] = w["alpha_r_inline"] is not None or w["alpha_r_otherline"] is not None
-        if w["split"]:
-            for kind in ("inline", "otherline"):
-                if w["alpha_r_" + kind] is None:
-                    w["alpha_r_" + kind], w["L_" + kind] = w["alpha_r"], w["L_r"]
+        w["split"] = None not in self._flight_order_columns()
         return w
+
+    def _flight_order_columns(self):
+        """The line column and the flight-order column (xdist, else timestamp); None for each the data lack."""
+        fl = self.xyz.flightlines
+        return (self.xyz.line_id_column,
+                next((c for c in ("xdist", "timestamp") if c in fl.columns), None))
 
     def _print_smoothness(self, w):
         """Print every smoothness alpha with its length scale, for the run log."""
+        if not w["split"]:
+            line_col, _ = self._flight_order_columns()
+            missing = ("line" if line_col is None
+                       else "along-line distance (xdist) or time (timestamp)")
+            print(f"##SMOOTHNESS## The data have no {missing} column, so the lateral links are "
+                  "the triangulation's, all with alpha_r, instead of split along and between lines.")
         unit = crs_unit(self.xyz.model_info.get("projection"))
         lateral = ([("alpha_r_inline", "L_inline"), ("alpha_r_otherline", "L_otherline")]
                    if w["split"] else [("alpha_r", "L_r")])
@@ -958,21 +971,9 @@ class XYZSystem(object):
         edges : ndarray (n_links, 2) of int
             Sounding index pairs; links whose alpha is 0 are left out.
         alphas : ndarray (n_links,)
-
-        Raises
-        ------
-        ValueError
-            If the data have no line column, or neither along-line distance nor time.
         """
         fl = self.xyz.flightlines
-        line_col = self.xyz.line_id_column
-        if line_col is None:
-            raise ValueError("Smoothing along and between lines needs a line column "
-                             "(Line, line_no, ...), and the data have none")
-        order_col = next((c for c in ("xdist", "timestamp") if c in fl.columns), None)
-        if order_col is None:
-            raise ValueError("Smoothing along and between lines needs the flight order of each "
-                             "line: an along-line distance (xdist) or a time (timestamp) column")
+        line_col, order_col = self._flight_order_columns()
         line = fl[line_col].to_numpy()
         inline = inline_links(line, fl[order_col].to_numpy())
         other = otherline_links(delaunay_edges, line)
@@ -985,7 +986,8 @@ class XYZSystem(object):
     def make_regularization(self, thicknesses):
         w = self.smoothness_weights()
         self._print_smoothness(w)
-        coords = self.xyz.flightlines[[self.xyz.x_column, self.xyz.y_column]].astype(float).values
+        self.smoothness_report = {"lateral_links": "inline_otherline" if w["split"] else "triangulation"}
+        coords =self.xyz.flightlines[[self.xyz.x_column, self.xyz.y_column]].astype(float).values
         hz = np.r_[thicknesses, thicknesses[-1]]
 
         # Build the 2-D lateral mesh by triangulating the sounding positions.
@@ -1332,8 +1334,10 @@ class XYZSystem(object):
                     obj.flightlines['cluster_id'] = cluster_id_full.values
 
         # final_beta is what a later warm start from these outputs reads back;
-        # startmodel_report says how this run's own start was made.
+        # startmodel_report says how this run's own start was made, and smoothness_report
+        # which lateral links the regularization used.
         info = dict(getattr(self, 'startmodel_report', {}))
+        info.update(getattr(self, 'smoothness_report', {}))
         recorder = getattr(self, '_beta_recorder', None)
         final_beta = recorder.beta if recorder is not None else None
         if final_beta is None:   # no iteration recorded

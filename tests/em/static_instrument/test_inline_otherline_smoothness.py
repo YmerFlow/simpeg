@@ -1,9 +1,10 @@
 """Lateral smoothing along a line and between lines (YmerFlow/simpeg#31).
 
-Setting ``regularization__alpha_r_inline`` / ``alpha_r_otherline`` (or their lengths
-``L_inline`` / ``L_otherline``) splits the lateral links in two: a chain along each line in
-flight order, and the Delaunay edges between lines. Every alpha can also be given as a length,
-alpha = alpha_s * L**2. These tests build the regularization of a bare XYZSystem from sounding
+The lateral links are split in two: a chain along each line in flight order, weighted by
+``regularization__alpha_r_inline`` (or its length ``L_inline``), and the Delaunay edges between
+lines, weighted by ``alpha_r_otherline`` (``L_otherline``). Data without a line column or flight
+order fall back to the triangulation with ``alpha_r``. Every alpha can also be given as a
+length, alpha = alpha_s * L**2. These tests build the regularization of a bare XYZSystem from sounding
 positions alone; no data or simulation is needed.
 """
 
@@ -60,13 +61,15 @@ def chain(xyz, by="xdist"):
     return pairs
 
 
+def delaunay_edges(xyz):
+    tri = Delaunay(xyz.flightlines[["x", "y"]].to_numpy())
+    return {tuple(sorted((int(a), int(b)))) for s in tri.simplices
+            for a, b in ((s[0], s[1]), (s[1], s[2]), (s[0], s[2]))}
+
+
 def delaunay_between_lines(xyz):
-    fl = xyz.flightlines
-    tri = Delaunay(fl[["x", "y"]].to_numpy())
-    line = fl["line_no"].to_numpy()
-    pairs = {tuple(sorted((int(a), int(b)))) for s in tri.simplices
-             for a, b in ((s[0], s[1]), (s[1], s[2]), (s[0], s[2]))}
-    return {p for p in pairs if line[p[0]] != line[p[1]]}
+    line = xyz.flightlines["line_no"].to_numpy()
+    return {p for p in delaunay_edges(xyz) if line[p[0]] != line[p[1]]}
 
 
 def reg_of(xyz, **opts):
@@ -263,15 +266,24 @@ def test_deprecated_distance_weighted_false_stops_the_run():
         weights(regularization__distance_weighted=False)
 
 
-def test_the_split_needs_a_line_column_and_flight_order():
-    xyz = parallel_lines()
-    no_line = make_xyz(xyz.flightlines.x, xyz.flightlines.y, None, xdist=xyz.flightlines.xdist)
+def test_without_a_line_column_or_flight_order_the_links_fall_back_to_the_triangulation(capsys):
+    fl = parallel_lines().flightlines
+    no_line = make_xyz(fl.x, fl.y, None, xdist=fl.xdist)
     del no_line.flightlines["line_no"]
-    with pytest.raises(ValueError, match="needs a line column"):
-        reg_of(no_line, regularization__L_inline=100.0)
-    no_order = make_xyz(xyz.flightlines.x, xyz.flightlines.y, xyz.flightlines.line_no)
-    with pytest.raises(ValueError, match="flight order"):
-        reg_of(no_order, regularization__L_inline=100.0)
+    no_order = make_xyz(fl.x, fl.y, fl.line_no)
+    for xyz, missing in ((no_line, "line"),
+                         (no_order, "along-line distance (xdist) or time (timestamp)")):
+        system = XYZSystem(xyz, regularization__L_r=200.0)
+        reg = system.make_regularization(LAYERS)
+        assert links(reg) == dict.fromkeys(delaunay_edges(xyz), 1.0)
+        assert reg.alpha_r == pytest.approx(4.0)
+        out = capsys.readouterr().out
+        assert f"The data have no {missing} column" in out
+        assert "alpha_r 4 (L_r 200 m)" in out
+        assert system.smoothness_report == {"lateral_links": "triangulation"}
+    system = XYZSystem(parallel_lines())
+    system.make_regularization(LAYERS)
+    assert system.smoothness_report == {"lateral_links": "inline_otherline"}
 
 
 # ── The run log and the schema ───────────────────────────────────────────────
