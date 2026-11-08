@@ -1,6 +1,6 @@
 # Check the DOI against the model base
 
-**State:** proposed 2026-11-08, waiting for decisions
+**State:** decided 2026-11-08 (the suggested answers), built in the same PR
 **Ticket:** YmerFlow/ymerflow-business#161
 **Builds on:** #29 (the Christiansen-Auken DOI written with every inversion)
 
@@ -8,7 +8,7 @@
 
 The model base, the top of the half-space, is a modelling choice. When it is too shallow for the system and the ground, the lower DOI piles up at the base and the deepest part of the section is cut off. Nothing in a run says so today; it is found by plotting the DOI against depth by hand.
 
-On one helicopter TEM survey inverted with 40 layers and a 500 m base, the lower DOI sat at the base on 44% of soundings and the upper DOI on 21% (within 1 m of the base; 47% and 26% within half a bottom-layer thickness, see decision 2), and the 90th percentile of the lower DOI was the base itself. With a 700 m base the same survey gave 1% and 0% (2% and 0%), and a lower DOI p90 at 91% of the base. A survey flown with a system that reaches less deep, inverted with the 500 m layering, gave 0.1%. So a fixed layering can be right for one system and wrong for another, and the run is the place to say which.
+On one helicopter TEM survey inverted with 40 layers and a 500 m base, the lower DOI sat at the base on 44% of soundings and the upper DOI on 21% (within 1 m of the base; 47% and 26% within half a bottom-layer thickness, see decision 2), and the 90th percentile of the lower DOI was the base itself. With a 700 m base the same survey gave 1% and 0% (2% and 0%), and a lower DOI p90 at 91% of the base. A survey flown with a system that reaches less deep, inverted with the 500 m layering, gave 0.1% (0.4%). So a fixed layering can be right for one system and wrong for another, and the run is the place to say which.
 
 ## Design
 
@@ -69,11 +69,11 @@ WARNING: the model base (500 m) cuts off the lower DOI on more than 5% of soundi
 - Synthetic DOI arrays and layer tops with known shares: at the base within half a bottom-layer thickness and not beyond, the 90th percentile, the first-layer share, NaN DOIs left out and counted, per-line grouping, no line column.
 - The warning names exactly the lines over the threshold, and none when all are under.
 - An inversion stand-in, as in the DOI tests: `model_info["doi_check"]` on the smooth model, on both models with IRLS, and through msgpack.
-- Locally, not committed: the 500 m and 700 m models of the survey above should give about 44% / 21% and 1% / 0%.
+- Locally, not committed: the 500 m and 700 m models of the survey above should give about 47% / 26% and 2% / 0% (half a bottom layer). Run 2026-11-08: 46.7% / 25.9% with p90 at 100% of the base, and 1.8% / 0% with p90 at 91%; the shallower system 0.4% / 0%. The check also survived the `alc` normalize and an Aarhus XYZ export that read back.
 
 ## Decisions
 
-| # | Question | Options | Suggested |
+| # | Question | Options | Decision (2026-11-08) |
 |---|---|---|---|
 | 1 | Where the check runs | A: simpeg, right after the DOI. B: aem-processes `invert_tem`, from the written model. | A, with the function usable from B. |
 | 2 | "At the base" | A: within half a bottom-layer thickness of the half-space top. B: within 1 m of it. On the 500 m models above, A gives 46.7% and B 44.4% of soundings for the lower DOI. | A, as in the ticket: it scales with the layering. |
