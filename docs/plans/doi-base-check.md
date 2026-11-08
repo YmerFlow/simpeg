@@ -76,7 +76,7 @@ WARNING: the model base (500 m) cuts off the lower DOI on more than 5% of soundi
 | # | Question | Options | Suggested |
 |---|---|---|---|
 | 1 | Where the check runs | A: simpeg, right after the DOI. B: aem-processes `invert_tem`, from the written model. | A, with the function usable from B. |
-| 2 | "At the base" | A: within half a bottom-layer thickness of the half-space top. B: only a DOI exactly at the half-space top. | A, as in the ticket. |
+| 2 | "At the base" | A: within half a bottom-layer thickness of the half-space top. B: within 1 m of it. On the 500 m models above, A gives 46.7% and B 44.4% of soundings for the lower DOI. | A, as in the ticket: it scales with the layering. |
 | 3 | Warning threshold | Share of a line's soundings with the lower DOI at the base. | 5%. |
 | 4 | Where the numbers go | A: `model_info` on the model (also a header comment in XYZ exports). B: a JSON file next to the outputs, which needs `invert_tem`. C: both. | A now; B arrives with the #153 run summary. |
 | 5 | First-layer share | Include, or leave out. | Include; it costs one line. |
