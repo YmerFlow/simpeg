@@ -1,6 +1,6 @@
 # Lateral smoothing along a line and between lines
 
-**State:** decided 2026-10-31; schema shape revised 2026-11-02 (group-object `x-format`, see section 2); decision 1 settled 2026-11-03; decision 3 changed 2026-11-03, with a fallback 2026-11-05; decision 8 open
+**State:** decided 2026-10-31; schema shape revised 2026-11-02 (group-object `x-format`, see section 2); decision 1 settled 2026-11-03; decision 3 changed 2026-11-03, with a fallback 2026-11-05; decision 8 proposed 2026-11-07, not yet decided
 **Labels:** enhancement, inversion
 **Builds on:** #28 (distance-weighted lateral and vertical smoothness)
 
@@ -48,25 +48,44 @@ When `alpha_s` changes, the lengths are held and the alphas recomputed, since th
 
 In the platform's process editor the alphas and lengths are linked: editing a length rewrites its alpha, editing an alpha rewrites its length, and changing `alpha_s` rewrites the alphas, all using the form's current `alpha_s`. The relation is always alpha = alpha_s L^2.
 
-The schema carries this as a single `x-format` annotation on the enclosing **group object**, the way every other custom widget in Ymerflow is declared (a leaf's `x-format` picks its widget in `CustomStringField` — `dataset`, `upload`, `datasetPath` — and an `anyOf`'s picks `ExpressionField`). The smoothness parameters already form a group object: swaggerspect turns the flattened `regularization__*` attributes into a `regularization` object (`deps/swaggerspect/swaggerspect/__init__.py`, `_group_parameters`). That object carries the format, and a single length-scale widget renders its members together and keeps them in sync:
+The schema carries this as a single `x-format` annotation on the enclosing **group object**, the way every other custom widget in Ymerflow is declared (a leaf's `x-format` picks its widget in `CustomStringField` - `dataset`, `upload`, `datasetPath` - and an `anyOf`'s picks `ExpressionField`). The smoothness parameters already form a group object: swaggerspect turns the flattened `regularization__*` attributes into a `regularization` object (`deps/swaggerspect/swaggerspect/__init__.py`, `_group_parameters`). That object carries the format and, beside it, which of its own members pair up (decision 8):
 
 ```json
 "regularization": {
   "type": "object",
   "x-format": "length-scale",
+  "x-length-scales": {
+    "alpha_s": "alpha_s",
+    "pairs": {"L_r": "alpha_r", "L_z": "alpha_z",
+              "L_inline": "alpha_r_inline", "L_otherline": "alpha_r_otherline"}
+  },
   "properties": {
+    "mref":              {"type": "string", "enum": ["auto", "startmodel", "halfspace"]},
     "alpha_s":           {"type": "number"},
-    "alpha_z":           {"type": "number"},
     "alpha_r":           {"type": "number"},
+    "L_r":               {"type": "number"},
+    "alpha_z":           {"type": "number"},
+    "L_z":               {"type": "number"},
     "alpha_r_inline":    {"type": "number"},
-    "alpha_r_otherline": {"type": "number"}
+    "L_inline":          {"type": "number"},
+    "alpha_r_otherline": {"type": "number"},
+    "L_otherline":       {"type": "number"}
   }
 }
 ```
 
-The widget owns the whole group, so no field refers to another by name and nothing outside the group is touched. On the frontend this is one object-level dispatch (`if (schema['x-format'] === 'length-scale')`) returning a self-contained widget, mirroring `CustomStringField`; it does **not** wrap the generic `ObjectField` or inspect sibling keys.
+The widget owns the whole group: it renders every member, the pairs together and the rest (`mref`) as the form would anyway, and keeps the pairs in step. The pairs are named on the group, by the node the widget owns, so no field refers to another and nothing outside the group is touched. On the frontend this is one object-level dispatch (`if (schema['x-format'] === 'length-scale')`) returning a self-contained widget, and any other object goes to the default object field unchanged, mirroring `CustomStringField`. It does **not** wrap the generic `ObjectField` or inspect sibling keys.
 
-Enabling work: `_group_parameters` synthesizes the `regularization` object itself and today preserves annotations only on leaf fields, not on the group it builds — which is why a per-leaf annotation was the only shape that survived. swaggerspect needs a small extension so a flattened group can carry group-level schema keys (e.g. `x-format`); how a Python class declares them on a synthesized group is an open sub-question (decision 8). The length scales (`L_*`) are members of this group and submitted, beside the alphas (decision 1).
+Enabling work: `_group_parameters` synthesizes the `regularization` object itself and today preserves annotations only on leaf fields, not on the group it builds, which is why a per-leaf annotation was the only shape that survived. A class gives the group its keys by declaring the group under its own name, as an annotation with no value (decision 8):
+
+```python
+regularization: typing.Annotated[typing.Any, {"json_schema": {
+    "x-format": "length-scale",
+    "x-length-scales": {"alpha_s": "alpha_s", "pairs": {...}}}}]
+"Smallness and smoothness weights, each smoothness weight with its length scale."
+```
+
+swaggerspect already reads such an annotation (`swaggerspect.JsonSchema` is the same thing); what it lacks is the merge. Today a declared `regularization` stops the grouping with a `KeyError` when it comes before its members and replaces the group, members and all, when it comes after. The extension merges the declared keys into the group it builds, in either order, and keeps the group's own `type`, `properties` and `x-python-type: null`, the marker by which `GroupMergingValidator` flattens the submitted group back to `regularization__*`. The attribute's docstring becomes the group's description, which today is just "regularization". The declaration has no value, so the class gains no attribute and a run receives exactly the parameters it does now; a class without one gets today's schema. The length scales (`L_*`) are members of this group and submitted, beside the alphas (decision 1).
 
 Alphas for a given length scale, at `alpha_s` = 1e-4, and the resulting pull from neighboring lines 1.9 km away:
 
@@ -125,14 +144,14 @@ Measured for each: misfit per line, iterations, wall time, and the difference in
 | 5 | Test runs | The four above, or another set. | The four above. |
 | 6 | Length fields for the existing weights | A: add `L_z` and `L_r` beside `alpha_z` and `alpha_r`, linked the same way. B: only the two new weights get lengths. | A, so every smoothness setting reads the same way. |
 | 7 | What `alpha_s` changes | A: hold the lengths, recompute the alphas. B: hold the alphas, recompute the lengths. | A. The lengths are the geological choice; `alpha_s` sets how strongly the model is held to the reference. |
-| 8 | How a flattened group declares a group-level `x-format` | A: extend `_group_parameters` to merge group-level keys a class supplies (e.g. a `regularization = {"x-format": ...}` marker). B: a dedicated sub-group object. C: other. | **Open 2026-11-02.** swaggerspect currently preserves annotations only on leaf fields; the group object is synthesized, so object-level `x-format` needs a new hook. To settle. |
+| 8 | How a flattened group declares a group-level `x-format`, and how the widget knows the pairs | Declaring: A: the class declares the group under its own name, an annotation with no value, and `_group_parameters` merges its keys into the group it builds (the review's marker, without a value, so nothing changes at run time). B: a class-level table, e.g. `__swaggerspect_groups__ = {"regularization": {...}}`, read by swaggerspect's class API and passed through to the grouping. C: one member carries keys for its parent, lifted by `_group_parameters`. Pairing: P: the group names its pairs (`x-length-scales`). N: the widget pairs by name (`L_x` with `alpha_x` or `alpha_r_x`). | **Proposed 2026-11-07: A with P, to decide.** A reuses the annotation swaggerspect already reads and gives the group a real description; B is a second mechanism beside annotations; C has a field speak for its group, which is what the review on Ymerflow #138 asked to avoid. P keeps simpeg's parameter names out of the frontend; N would tie the widget to them. Was open since 2026-11-02. |
 
 ## Work
 
 - `simpeg/regularization/regularization_mesh_lateral.py`: build the lateral operator from an explicit edge list with a weight per edge (the inline chain plus otherline Delaunay edges), alongside #28's simplex-mesh path.
-- `simpeg/electromagnetics/utils/static_instrument/base.py`: the new alphas (and, if decision 1 lands on C, the lengths, resolving each pair as in section 2 with the section 3 checks), the link classification from the `Line` column and along-line distance, every alpha with its length in the run report, and marking the `regularization` group with `x-format: "length-scale"` via the swaggerspect hook from decision 8.
-- `deps/swaggerspect`: extend `_group_parameters` so a flattened group can carry group-level schema keys (decision 8); today it only preserves leaf-field annotations.
-- Ymerflow, process editor forms: a single object-level dispatch (`x-format === 'length-scale'`) returning a self-contained length-scale widget — matching how `CustomStringField` dispatches `dataset`/`upload`. The widget renders `alpha_s` and the alpha/length pairs together and keeps them in sync internally. It must **not** override the generic `ObjectField` to inspect sibling keys (this is the PR #138 correction).
+- `simpeg/electromagnetics/utils/static_instrument/base.py`: the new alphas (and, if decision 1 lands on C, the lengths, resolving each pair as in section 2 with the section 3 checks), the link classification from the `Line` column and along-line distance, every alpha with its length in the run report, and declaring the `regularization` group with `x-format: "length-scale"` and its pairs (decision 8). The per-length `x-length-scale` annotation (`length_scale_of` in `smoothness.py`) goes.
+- `deps/swaggerspect`: extend `_group_parameters` to merge a declared group's keys into the group it builds, in either order, keeping its `properties` and `x-python-type: null` (decision 8); today a declared group either stops the grouping or replaces its members.
+- Ymerflow, process editor forms: a `CustomObjectField` whose only job is the dispatch: `x-format === 'length-scale'` returns a self-contained length-scale widget, anything else goes to the default object field unchanged, matching how `CustomStringField` dispatches `dataset`/`upload`. The widget renders the group's members, the pairs named in `x-length-scales` together, and keeps them in sync internally. It must **not** wrap the generic `ObjectField`'s `onChange` or inspect sibling keys (this is the PR #138 correction).
 - Tests: link classification on two parallel lines and on a line with a tie crossing (the crossing must not break either line's chain), chords left out on a curving line, the two weights applied to the right links, `alpha_r_otherline = 0` giving the same model as inverting the lines separately with the same β, #28 behavior when both options are unset, and each way of resolving a pair, including the error when both are given and disagree. In Ymerflow, a form test for both directions of the link and for an `alpha_s` change.
 
 Rough size: two days in simpeg on top of #28, and half a day in Ymerflow.
