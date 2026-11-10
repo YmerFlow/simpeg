@@ -242,19 +242,28 @@ LENGTHS = {"L_r": "alpha_r", "L_z": "alpha_z", "L_inline": "alpha_r_inline",
            "L_otherline": "alpha_r_otherline"}
 
 
-def test_each_length_is_annotated_with_its_alpha():
+def test_the_regularization_group_names_each_length_with_its_alpha():
+    """The group declares the pairs; every member it names is a parameter of the system."""
     hints = typing.get_type_hints(XYZSystem, include_extras=True)
-    for length, alpha in LENGTHS.items():
-        assert hints["regularization__" + length].__metadata__ == (
-            {"swaggerspect_x-length-scale": {"alpha": alpha, "alpha_s": "alpha_s"}},)
+    (declared,) = hints["regularization"].__metadata__
+    keys = declared["json_schema"]
+    assert keys["x-format"] == "length-scale"
+    assert keys["x-length-scales"] == {"alpha_s": "alpha_s", "pairs": LENGTHS}
+    for name in ["alpha_s", *LENGTHS, *LENGTHS.values()]:
+        assert hasattr(XYZSystem, "regularization__" + name)
+    assert not hasattr(XYZSystem, "regularization")            # a declaration, not an attribute
 
 
-def test_the_schema_links_each_length_to_its_sibling_alpha():
+def test_the_schema_puts_the_length_scale_widget_on_the_group():
     swaggerspect = pytest.importorskip("swaggerspect")
     from swaggerspect import class_api
     api = swaggerspect.group_apis_parameters({"anyOf": [class_api.get_class_api(XYZSystem, name="S")]})
-    group = api["anyOf"][0]["properties"]["S"]["properties"]["regularization"]["properties"]
+    group = api["anyOf"][0]["properties"]["S"]["properties"]["regularization"]
+    assert group["x-format"] == "length-scale"
+    assert group["x-length-scales"]["pairs"] == LENGTHS
+    assert group["x-python-type"] is None                      # still flattened back on submit
+    members = group["properties"]
     for length, alpha in LENGTHS.items():
-        assert group[length]["type"] == "number"
-        assert group[length]["x-length-scale"] == {"alpha": alpha, "alpha_s": "alpha_s"}
-        assert alpha in group and "alpha_s" in group
+        assert members[length]["type"] == "number" and alpha in members
+        assert not any(k.startswith("x-length") for k in members[length])
+    assert "alpha_s" in members and "mref" in members

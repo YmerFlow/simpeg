@@ -3,35 +3,26 @@
 With distance weighting (``regularization__distance_weighted``), a smoothness weight alpha
 and its length scale L are two forms of one setting, alpha = alpha_s * L**2. The functions
 here resolve such a pair, build the two kinds of lateral link (along a flight line and
-between lines), and give the type that links a length parameter to its alpha in the
-parameter schema.
+between lines), and give the type of the ``regularization`` parameter group, which tells a
+form which members pair up.
 """
 
 import typing
 
 import numpy as np
 
+# Each smoothness length scale and the alpha it sets, alpha = alpha_s * L**2, by their
+# names within the regularization group.
+LENGTH_SCALES = {"L_r": "alpha_r", "L_z": "alpha_z",
+                 "L_inline": "alpha_r_inline", "L_otherline": "alpha_r_otherline"}
 
-def length_scale_of(alpha):
-    """Type of a length-scale parameter, linked in the schema to the alpha it sets.
-
-    swaggerspect copies ``swaggerspect_``-prefixed metadata into the parameter's schema, so
-    the field carries ``"x-length-scale": {"alpha": alpha, "alpha_s": "alpha_s"}``, naming
-    its sibling fields. A form can then keep the two in step with alpha = alpha_s * L**2.
-
-    Parameters
-    ----------
-    alpha : str
-        Name of the alpha field in the same parameter group, e.g. ``"alpha_r_inline"``.
-
-    Returns
-    -------
-    typing.Annotated
-        ``float`` annotated with the link.
-    """
-    return typing.Annotated[
-        float, {"swaggerspect_x-length-scale": {"alpha": alpha, "alpha_s": "alpha_s"}}
-    ]
+# Type of the regularization group itself, declared as a parameter named ``regularization``
+# with no value. swaggerspect merges these keys into the group object it builds from the
+# regularization__* parameters, so a form renders the group with one length-scale widget,
+# which keeps each pair in step.
+LENGTH_SCALE_GROUP = typing.Annotated[typing.Any, {"json_schema": {
+    "x-format": "length-scale",
+    "x-length-scales": {"alpha_s": "alpha_s", "pairs": LENGTH_SCALES}}}]
 
 
 def resolve_pair(alpha, length, alpha_s, alpha_name, length_name):
