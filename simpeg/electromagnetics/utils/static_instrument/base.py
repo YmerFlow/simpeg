@@ -32,7 +32,7 @@ from simpeg.regularization import LaterallyConstrained
 from .thickness import build_log_spaced_layer_thick
 from .schedules import MisfitDrivenBetaSchedule, RecordBeta, StartingBeta
 from .smoothness import (
-    crs_unit, inline_links, length_scale_of, otherline_links, resolve_pair)
+    LENGTH_SCALE_GROUP, crs_unit, inline_links, otherline_links, resolve_pair)
 from .utils import (detect_cpu_availability, describe_layers, lateral_median, layer_tops,
                     load_start_models, match_soundings, median_line_spacing,
                     sounding_keys, start_model_resistivity)
@@ -759,6 +759,8 @@ class XYZSystem(object):
         self._cached_cluster_startmodel = startmodel
         return startmodel
 
+    regularization: LENGTH_SCALE_GROUP
+    "Smallness and smoothness weights. Each smoothness weight alpha has a length scale L, alpha = alpha_s * L**2, and either can be given."
     regularization__mref: typing.Literal['auto', 'startmodel', 'halfspace'] = 'auto'
     "Reference model for regularization: 'startmodel' uses the start model (the cluster-derived one when clustering is on); 'halfspace' uses a flat halfspace at startmodel__res. 'auto' (default) is 'halfspace' when starting from startmodel__dataset, so the smallness term does not pull the result back toward the earlier models, and 'startmodel' otherwise."
 
@@ -835,7 +837,7 @@ class XYZSystem(object):
     matches your desired lateral resolution. Increase alpha_r for laterally continuous geology
     (e.g., sedimentary basins); keep it low if you expect sharp lateral boundaries.
     """
-    regularization__L_r: length_scale_of("alpha_r") = None
+    regularization__L_r: float = None
     """Length scale of alpha_r, in the CRS linear unit (m or ft): alpha_r = alpha_s * L_r**2.
 
     Another way to give alpha_r, with distance_weighted on. Given alone, a length sets its alpha
@@ -861,7 +863,7 @@ class XYZSystem(object):
     with it True, differences are divided by the distance between layer centers and alpha_z sets a
     vertical length scale: L_z = sqrt(alpha_z / alpha_s) meters (alpha_s 1e-4, alpha_z 0.0625 → 25 m).
     """
-    regularization__L_z: length_scale_of("alpha_z") = None
+    regularization__L_z: float = None
     "Length scale of alpha_z, in the CRS linear unit: alpha_z = alpha_s * L_z**2. Give either one; see L_r."
     regularization__distance_weighted: bool = False
     """Divide each smoothness difference by the real distance it spans (ymerflow-business#119).
@@ -887,7 +889,7 @@ class XYZSystem(object):
     another line, so a crossing is a short otherline link. The weight not set defaults to
     alpha_r. Needs distance_weighted on and a line column. With both unset, the lateral
     smoothness is alpha_r on every Delaunay edge, as before."""
-    regularization__L_inline: length_scale_of("alpha_r_inline") = None
+    regularization__L_inline: float = None
     "Length scale of alpha_r_inline, in the CRS linear unit: alpha_r_inline = alpha_s * L_inline**2. Give either one; see L_r."
     regularization__alpha_r_otherline: float = None
     """Lateral weight of the links between flight lines; see alpha_r_inline.
@@ -897,7 +899,7 @@ class XYZSystem(object):
     takes L_otherline of the order of a kilometer: at 100 m the lines are effectively
     independent. 0 inverts each line on its own, all lines sharing one beta schedule and one
     stopping rule."""
-    regularization__L_otherline: length_scale_of("alpha_r_otherline") = None
+    regularization__L_otherline: float = None
     "Length scale of alpha_r_otherline, in the CRS linear unit: alpha_r_otherline = alpha_s * L_otherline**2. Give either one; see L_r."
 
     def _given(self, name):
