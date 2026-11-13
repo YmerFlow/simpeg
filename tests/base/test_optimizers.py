@@ -109,5 +109,43 @@ def test_projected_gradient_cg_step_solves_to_tolCG():
     assert 1e-3 < relative_residual(p, SPREAD, opt.g) <= 0.1
 
 
+def recursive_bfgs(S, Y, n, H0, d):
+    """The recursive L-BFGS of earlier versions, with the pairs as the columns of S and Y."""
+    nn = min(S.shape[1], n)
+
+    def rec(k, d):
+        if k < 0:
+            return H0 * d
+        khat = 0 if nn == 0 else np.mod(n - nn + k, nn)
+        gamma = np.vdot(S[:, khat], d) / np.vdot(Y[:, khat], S[:, khat])
+        d = rec(k - 1, d - gamma * Y[:, khat])
+        ys = np.vdot(Y[:, khat], S[:, khat])
+        return d + (gamma - np.vdot(Y[:, khat], d) / ys) * S[:, khat]
+
+    return rec(nn, d)
+
+
+def test_two_loop_bfgs_matches_the_recursive_form():
+    rng = np.random.default_rng(0)
+    opt = optimization.InexactGaussNewton()
+    opt._startup_BFGS(np.zeros(N))
+    opt.bfgsH0 = optimization.SolverDiag(sp.diags(rng.uniform(1.0, 3.0, N)))
+    S, Y = np.zeros((N, opt.nbfgs)), np.zeros((N, opt.nbfgs))
+    d = rng.normal(size=N)
+    d_in = d.copy()
+    # From no pairs, through a part-filled memory, to one that has wrapped around twice.
+    for _ in range(2 * opt.nbfgs + 3):
+        expected = recursive_bfgs(S, Y, opt._bfgscnt, opt.bfgsH0, d)
+        np.testing.assert_allclose(opt.bfgs(d), expected, rtol=1e-12,
+                                   atol=1e-12 * np.abs(expected).max())
+        assert np.array_equal(d, d_in)
+        s = rng.normal(size=N)
+        y = s + 0.3 * rng.normal(size=N)                 # y . s > 0, so the pair is kept
+        opt.iter, opt.g_last, opt.g, opt.xc = 1, np.zeros(N), y, s
+        opt._doEndIteration_BFGS(np.zeros(N))
+        assert opt.comment == ""
+        S[:, opt._bfgscnt % opt.nbfgs], Y[:, opt._bfgscnt % opt.nbfgs] = s, y
+
+
 if __name__ == "__main__":
     unittest.main()
