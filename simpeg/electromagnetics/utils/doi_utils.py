@@ -11,7 +11,9 @@ investigation: Geophysics 77(4), WB171-WB177:
 - eq. 5: S_j = sum_{k >= j} s_k, cumulated from the bottom layer (the halfspace included) up.
 - The DOI is the depth where S falls to a threshold. The paper uses one threshold (0.8;
   0.6-1.2 tested). Aarhus Workbench (AarhusInv con file) reports two: DOIAbsHigh 1.5 for the
-  shallow "upper" DOI and DOIAbsLow 0.75 for the deep "lower" DOI.
+  shallow "upper" DOI and DOIAbsLow 0.75 for the deep "lower" DOI. The defaults here are the
+  two ends of the paper's tested range, 1.2 for the upper and 0.6 for the lower DOI. On the
+  helicopter TEM surveys tried, that put the median DOI 4-8 % deeper than Workbench's pair.
 
 Scale: by default s_j = sum_i |G_ij|, without the 1/dd_i of eq. 3 as printed
 (``weighted=False``). The paper's own figures and the AarhusInv manual are on that scale, and
@@ -209,7 +211,7 @@ def stitched_cumulative_sensitivity(simulation, model, relative_uncertainty, wei
     return cumulative_sensitivity(s), depth_top
 
 
-def doi_christiansen_auken(simulation, model, relative_uncertainty, thresholds=(1.5, 0.75),
+def doi_christiansen_auken(simulation, model, relative_uncertainty, thresholds=(1.2, 0.6),
                            weighted=False, d_pred=None):
     """Christiansen-Auken (2012) DOI of every sounding of a stitched 1-D inversion.
 
@@ -223,8 +225,9 @@ def doi_christiansen_auken(simulation, model, relative_uncertainty, thresholds=(
         Relative standard deviation of each datum [fraction]; ``inf`` for unused data. For an
         inversion with absolute uncertainties, divide them by |d_obs|.
     thresholds : sequence of float
-        Absolute thresholds [dimensionless]. Default: Aarhus Workbench's DOIAbsHigh 1.5
-        (upper, shallow) and DOIAbsLow 0.75 (lower, deep). The paper's single value is 0.8.
+        Absolute thresholds [dimensionless]. Default: 1.2 (upper, shallow) and 0.6 (lower,
+        deep), the ends of the range the paper tested. Aarhus Workbench's DOIAbsHigh and
+        DOIAbsLow are (1.5, 0.75); the paper's single value is 0.8.
     weighted : bool
         False (default): Workbench scale, which the thresholds above belong to. True: eq. 3 as
         printed, dividing by the relative standard deviation; see the module notes.

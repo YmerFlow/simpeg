@@ -1210,10 +1210,10 @@ class XYZSystem(object):
     get their own. The predicted data of the final model are reused. If it fails, the inversion still
     returns its models, with a warning and without the DOI columns. Method, scale and
     thresholds are documented in simpeg.electromagnetics.utils.doi_utils."""
-    doi__upper: float = 1.5
-    "Threshold on the cumulative sensitivity for doi_upper, the shallow, conservative DOI. Default 1.5, Aarhus Workbench's DOIAbsHigh. A larger threshold gives a shallower DOI."
-    doi__lower: float = 0.75
-    "Threshold on the cumulative sensitivity for doi_lower, the deeper DOI. Default 0.75, Aarhus Workbench's DOIAbsLow (the paper's single threshold is 0.8)."
+    doi__upper: float = 1.2
+    "Threshold on the cumulative sensitivity for doi_upper, the shallow, conservative DOI. Default 1.2, the top of the range the paper tested; Aarhus Workbench's DOIAbsHigh is 1.5. A larger threshold gives a shallower DOI."
+    doi__lower: float = 0.6
+    "Threshold on the cumulative sensitivity for doi_lower, the deeper DOI. Default 0.6, the bottom of the range the paper tested; Aarhus Workbench's DOIAbsLow is 0.75 and the paper's single threshold 0.8."
     doi__weighted: bool = False
     "False (default): a layer's sensitivity is the sum of |d ln d / d ln sigma| over the gates used, the scale Aarhus Workbench reports and the default thresholds belong to. True: each term is also divided by the gate's relative uncertainty, eq. 3 of the paper as printed; with the default thresholds the DOI then sits at or near the model base."
     doi__write_sensitivity: bool = True

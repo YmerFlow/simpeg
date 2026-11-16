@@ -7,6 +7,7 @@ data, weights from the system) and a chosen model, which is all the outputs read
 middle sounding has no data, so the system filters it out and its DOI must come back NaN.
 """
 
+import inspect
 import warnings
 from types import SimpleNamespace
 
@@ -120,6 +121,11 @@ def test_weighted_uses_the_inversions_own_uncertainties():
     s, dmis, final, _ = run_outputs(doi__weighted=True)
     doi, S = direct(s, dmis, final, weighted=True)
     assert_carries(s.l2, doi, S)
+
+
+def test_system_defaults_are_the_functions_defaults():
+    default = inspect.signature(doi_christiansen_auken).parameters["thresholds"].default
+    assert (base.XYZSystem.doi__upper, base.XYZSystem.doi__lower) == default == (1.2, 0.6)
 
 
 def test_thresholds_are_parameters():

@@ -145,7 +145,7 @@ def test_stitched_doi_per_sounding_and_given_dpred_changes_nothing():
     doi, S, z = doi_christiansen_auken(sim, m, rel)
     assert doi.shape == (2, 2) and S.shape == (2, len(THICKNESSES) + 1)
     np.testing.assert_allclose(z, np.r_[0.0, np.cumsum(THICKNESSES)])
-    assert (doi[:, 0] < doi[:, 1]).all()                      # 1.5 is shallower than 0.75
+    assert (doi[:, 0] < doi[:, 1]).all()                      # 1.2 is shallower than 0.6
     assert ((doi[0] > 0) & (doi[0] < z[-1])).all()            # below the 10 ohm.m layer
     assert (doi[1] > doi[0]).all()                            # the 100 ohm.m halfspace: deeper
     assert doi[1, 1] == z[-1]                                 # ... to the model base, a lower bound
