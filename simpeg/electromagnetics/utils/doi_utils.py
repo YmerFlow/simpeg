@@ -211,8 +211,14 @@ def stitched_cumulative_sensitivity(simulation, model, relative_uncertainty, wei
     return cumulative_sensitivity(s), depth_top
 
 
-def doi_christiansen_auken(simulation, model, relative_uncertainty, thresholds=(1.2, 0.6),
-                           weighted=False, d_pred=None):
+def doi_christiansen_auken(
+    simulation,
+    model,
+    relative_uncertainty,
+    thresholds=(1.2, 0.6),
+    weighted=False,
+    d_pred=None,
+):
     """Christiansen-Auken (2012) DOI of every sounding of a stitched 1-D inversion.
 
     Parameters

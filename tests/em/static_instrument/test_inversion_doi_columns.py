@@ -17,6 +17,7 @@ import pytest
 
 import libaarhusxyz
 
+from simpeg.electromagnetics.base_1d import BaseEM1DSimulation
 from simpeg.electromagnetics.utils.doi_utils import doi_christiansen_auken
 from simpeg.electromagnetics.utils.static_instrument import base, dual
 
@@ -124,8 +125,12 @@ def test_weighted_uses_the_inversions_own_uncertainties():
 
 
 def test_system_defaults_are_the_functions_defaults():
-    default = inspect.signature(doi_christiansen_auken).parameters["thresholds"].default
-    assert (base.XYZSystem.doi__upper, base.XYZSystem.doi__lower) == default == (1.2, 0.6)
+    def default(f):
+        return inspect.signature(f).parameters["thresholds"].default
+
+    single = BaseEM1DSimulation.depth_of_investigation_christiansen_2012
+    on_system = (base.XYZSystem.doi__upper, base.XYZSystem.doi__lower)
+    assert on_system == default(doi_christiansen_auken) == default(single) == (1.2, 0.6)
 
 
 def test_thresholds_are_parameters():
