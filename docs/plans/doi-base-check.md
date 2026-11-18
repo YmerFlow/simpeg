@@ -6,7 +6,7 @@
 
 ## Motivation
 
-The model base, the top of the half-space, is a modelling choice. When it is too shallow for the system and the ground, the lower DOI piles up at the base and the deepest part of the section is cut off. Nothing in a run says so today; it is found by plotting the DOI against depth by hand.
+The model base, the top of the half-space, is a modeling choice. When it is too shallow for the system and the ground, the lower DOI piles up at the base and the deepest part of the section is cut off. Nothing in a run says so today; it is found by plotting the DOI against depth by hand.
 
 On one helicopter TEM survey inverted with 40 layers and a 500 m base, the lower DOI sat at the base on 44% of soundings and the upper DOI on 21% (within 1 m of the base; 47% and 26% within half a bottom-layer thickness, see decision 2), and the 90th percentile of the lower DOI was the base itself. With a 700 m base the same survey gave 1% and 0% (2% and 0%), and a lower DOI p90 at 91% of the base. A survey flown with a system that reaches less deep, inverted with the 500 m layering, gave 0.1% (0.4%). So a fixed layering can be right for one system and wrong for another, and the run is the place to say which.
 

@@ -264,19 +264,26 @@ def _base_figures(doi_upper, doi_lower, z_first, z_at_base, z_base):
     up, low = doi_upper[has_doi], doi_lower[has_doi]
     out = {"n_soundings": int(len(doi_lower)), "n_with_doi": int(has_doi.sum())}
     if not has_doi.any():
-        return dict(out, lower_at_base=None, upper_at_base=None, lower_p90_of_base=None,
-                    upper_in_first_layer=None)
-    return dict(out,
-                lower_at_base=float(np.mean(low >= z_at_base)),
-                upper_at_base=float(np.mean(up >= z_at_base)),
-                lower_p90_of_base=float(np.percentile(low, 90) / z_base),
-                upper_in_first_layer=float(np.mean(up < z_first)))
+        return dict(
+            out,
+            lower_at_base=None,
+            upper_at_base=None,
+            lower_p90_of_base=None,
+            upper_in_first_layer=None,
+        )
+    return dict(
+        out,
+        lower_at_base=float(np.mean(low >= z_at_base)),
+        upper_at_base=float(np.mean(up >= z_at_base)),
+        lower_p90_of_base=float(np.percentile(low, 90) / z_base),
+        upper_in_first_layer=float(np.mean(up < z_first)),
+    )
 
 
 def doi_base_check(doi_upper, doi_lower, depth_top, line=None, threshold=0.05):
-    """How often the DOI sits at the model base, per line and for the whole run.
+    r"""How often the DOI sits at the model base, per line and for the whole run.
 
-    A DOI at the base means the model is cut off there: the half-space top, a modelling choice,
+    A DOI at the base means the model is cut off there: the half-space top, a modeling choice,
     is too shallow for the system and the ground. A DOI counts as at the base when it lies
     within half a bottom-layer thickness of the half-space top, ``doi >= z_base - t_bottom / 2``.
     A DOI equal to ``z_base`` is the case where the half-space alone is above the threshold.
@@ -320,30 +327,43 @@ def doi_base_check(doi_upper, doi_lower, depth_top, line=None, threshold=0.05):
     >>> fl = model.flightlines
     >>> check = doi_base_check(fl.doi_upper.values, fl.doi_lower.values,
     ...                        model.layer_data["dep_top"].values[0], fl.line_no.values)
-    >>> print("\\n".join(doi_check_messages(check)))
+    >>> print("\n".join(doi_check_messages(check)))
     """
     doi_upper = np.asarray(doi_upper, dtype=float)
     doi_lower = np.asarray(doi_lower, dtype=float)
     depth_top = np.asarray(depth_top, dtype=float)
     if len(depth_top) < 2:
         raise ValueError("at least one layer above the half-space is needed")
-    if len(doi_upper) != len(doi_lower) or (line is not None and len(line) != len(doi_lower)):
+    if len(doi_upper) != len(doi_lower) or (
+        line is not None and len(line) != len(doi_lower)
+    ):
         raise ValueError("doi_upper, doi_lower and line differ in length")
     z_base, t_bottom = depth_top[-1], depth_top[-1] - depth_top[-2]
     z_at_base = z_base - t_bottom / 2
 
     def figures(mask):
-        return _base_figures(doi_upper[mask], doi_lower[mask], depth_top[1], z_at_base, z_base)
+        return _base_figures(
+            doi_upper[mask], doi_lower[mask], depth_top[1], z_at_base, z_base
+        )
 
     lines = {}
     if line is not None:
         keys = [_line_key(v) for v in line]
         lines = {k: figures(np.array(keys) == k) for k in dict.fromkeys(keys)}
-    over = [k for k, f in lines.items()
-            if f["lower_at_base"] is not None and f["lower_at_base"] > threshold]
-    return {"threshold": float(threshold), "base_depth": float(z_base),
-            "bottom_layer": float(t_bottom), "first_layer": float(depth_top[1]),
-            "run": figures(slice(None)), "lines": lines, "lines_over_threshold": over}
+    over = [
+        k
+        for k, f in lines.items()
+        if f["lower_at_base"] is not None and f["lower_at_base"] > threshold
+    ]
+    return {
+        "threshold": float(threshold),
+        "base_depth": float(z_base),
+        "bottom_layer": float(t_bottom),
+        "first_layer": float(depth_top[1]),
+        "run": figures(slice(None)),
+        "lines": lines,
+        "lines_over_threshold": over,
+    }
 
 
 def doi_check_messages(check, name=None):
@@ -366,17 +386,23 @@ def doi_check_messages(check, name=None):
     base, pct = f"{check['base_depth']:.0f} m", f"{100 * check['threshold']:g}%"
     who = f"{name} model: " if name else ""
     if run["n_with_doi"] == 0:
-        return [f"##DOI_CHECK## {who}no sounding has a DOI ({run['n_soundings']} soundings)"]
-    summary = (f"##DOI_CHECK## {who}lower DOI at the base on {100 * run['lower_at_base']:.1f}% "
-               f"of {run['n_with_doi']} soundings with a DOI (upper {100 * run['upper_at_base']:.1f}%), "
-               f"lower DOI p90 at {100 * run['lower_p90_of_base']:.0f}% of the {base} base, "
-               f"upper DOI in the first layer on {100 * run['upper_in_first_layer']:.1f}%")
+        return [
+            f"##DOI_CHECK## {who}no sounding has a DOI ({run['n_soundings']} soundings)"
+        ]
+    summary = (
+        f"##DOI_CHECK## {who}lower DOI at the base on {100 * run['lower_at_base']:.1f}% "
+        f"of {run['n_with_doi']} soundings with a DOI (upper {100 * run['upper_at_base']:.1f}%), "
+        f"lower DOI p90 at {100 * run['lower_p90_of_base']:.0f}% of the {base} base, "
+        f"upper DOI in the first layer on {100 * run['upper_in_first_layer']:.1f}%"
+    )
     if lines:
         summary += f"; {len(over)} of {len(lines)} lines over {pct}"
     messages = [summary]
     warning = f"WARNING: {who}the model base ({base}) cuts off the lower DOI on more than {pct} of soundings"
     if over:
-        messages.append(f"{warning} on these lines: {', '.join(over)}; consider a deeper base")
+        messages.append(
+            f"{warning} on these lines: {', '.join(over)}; consider a deeper base"
+        )
     elif not lines and run["lower_at_base"] > check["threshold"]:
         messages.append(f"{warning}; consider a deeper base")
     return messages

@@ -26,18 +26,29 @@ def check(**kw):
 
 def test_layering_figures():
     c = check()
-    assert (c["base_depth"], c["bottom_layer"], c["first_layer"], c["threshold"]) == (100, 40, 10, 0.05)
+    assert (c["base_depth"], c["bottom_layer"], c["first_layer"], c["threshold"]) == (
+        100,
+        40,
+        10,
+        0.05,
+    )
 
 
 def test_shares_per_line():
     one = check()["lines"]["1"]
     assert (one["n_soundings"], one["n_with_doi"]) == (5, 4)
-    assert one["lower_at_base"] == 0.5                  # 100 and 85 m; 79 m is 1 m short
-    assert one["upper_at_base"] == 0.25                 # 80 m, exactly half a layer up
-    assert one["upper_in_first_layer"] == 0.5           # 5 and 9 m
-    assert one["lower_p90_of_base"] == pytest.approx(np.percentile([100, 85, 79, 50], 90) / 100)
+    assert one["lower_at_base"] == 0.5  # 100 and 85 m; 79 m is 1 m short
+    assert one["upper_at_base"] == 0.25  # 80 m, exactly half a layer up
+    assert one["upper_in_first_layer"] == 0.5  # 5 and 9 m
+    assert one["lower_p90_of_base"] == pytest.approx(
+        np.percentile([100, 85, 79, 50], 90) / 100
+    )
     two = check()["lines"]["2"]
-    assert (two["lower_at_base"], two["upper_at_base"], two["upper_in_first_layer"]) == (0, 0, 0)
+    assert (
+        two["lower_at_base"],
+        two["upper_at_base"],
+        two["upper_in_first_layer"],
+    ) == (0, 0, 0)
     assert two["lower_p90_of_base"] == pytest.approx(0.58)
 
 
@@ -57,7 +68,7 @@ def test_a_line_without_any_doi_is_counted_and_has_no_shares():
 
 def test_a_sounding_with_only_one_doi_is_left_out():
     upper = UPPER.copy()
-    upper[0] = NAN                                      # the 100 m lower DOI loses its upper
+    upper[0] = NAN  # the 100 m lower DOI loses its upper
     one = doi_base_check(upper, LOWER, DEPTH_TOP, LINE)["lines"]["1"]
     assert one["n_with_doi"] == 3
     assert one["lower_at_base"] == pytest.approx(1 / 3)
@@ -65,8 +76,8 @@ def test_a_sounding_with_only_one_doi_is_left_out():
 
 def test_lines_over_the_threshold():
     assert check()["lines_over_threshold"] == ["1"]
-    assert check(threshold=0.5)["lines_over_threshold"] == []      # over, not at
-    assert check(threshold=0.0)["lines_over_threshold"] == ["1"]   # line 2 is at 0
+    assert check(threshold=0.5)["lines_over_threshold"] == []  # over, not at
+    assert check(threshold=0.0)["lines_over_threshold"] == ["1"]  # line 2 is at 0
 
 
 def test_line_keys_are_strings_in_order_of_appearance():
@@ -93,6 +104,7 @@ def test_values_are_plain_python():
                 walk(x)
         else:
             assert v is None or type(v) in (int, float, str), (v, type(v))
+
     walk(check())
 
 
@@ -107,13 +119,18 @@ def test_bad_input():
 
 # ── Log lines ─────────────────────────────────────────────────────────────────
 
+
 def test_summary_and_a_warning_naming_exactly_the_lines_over():
     summary, warning = doi_check_messages(check(), "l2")
-    assert summary.startswith("##DOI_CHECK## l2 model: lower DOI at the base on 33.3% of 6 soundings")
+    assert summary.startswith(
+        "##DOI_CHECK## l2 model: lower DOI at the base on 33.3% of 6 soundings"
+    )
     assert "(upper 16.7%)" in summary and "of the 100 m base" in summary
     assert summary.endswith("; 1 of 3 lines over 5%")
-    assert warning == ("WARNING: l2 model: the model base (100 m) cuts off the lower DOI on more "
-                       "than 5% of soundings on these lines: 1; consider a deeper base")
+    assert warning == (
+        "WARNING: l2 model: the model base (100 m) cuts off the lower DOI on more "
+        "than 5% of soundings on these lines: 1; consider a deeper base"
+    )
 
 
 def test_no_warning_when_every_line_is_under():
@@ -128,4 +145,6 @@ def test_without_lines_the_run_share_decides():
 
 def test_no_doi_at_all():
     c = doi_base_check([NAN, NAN], [NAN, NAN], DEPTH_TOP, [1, 1])
-    assert doi_check_messages(c) == ["##DOI_CHECK## no sounding has a DOI (2 soundings)"]
+    assert doi_check_messages(c) == [
+        "##DOI_CHECK## no sounding has a DOI (2 soundings)"
+    ]

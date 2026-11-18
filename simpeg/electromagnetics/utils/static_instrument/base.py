@@ -26,8 +26,11 @@ from simpeg.utils import mkvc
 import simpeg.electromagnetics.time_domain as tdem
 import simpeg.electromagnetics.utils.em1d_utils
 from simpeg.electromagnetics.utils.em1d_utils import get_vertical_discretization_time
-from simpeg.electromagnetics.utils.doi_utils import (doi_base_check, doi_check_messages,
-                                                     doi_christiansen_auken)
+from simpeg.electromagnetics.utils.doi_utils import (
+    doi_base_check,
+    doi_check_messages,
+    doi_christiansen_auken,
+)
 from simpeg.regularization import LaterallyConstrained
 
 from .thickness import build_log_spaced_layer_thick
@@ -282,7 +285,7 @@ class XYZSystem(object):
     A subclass can then be instantiated together with an XYZ file
     structure with raw data read using libaarhusxyz.XYZ(), to form an
     invertible object, or with a model read using the same library to
-    do forward modelling.
+    do forward modeling.
 
     Basic usage:
 
@@ -328,7 +331,7 @@ class XYZSystem(object):
     def load_gex(cls, gex):
         """Accepts a GEX file loaded using libaarhusxyz.GEX() and returns a
         new subclass of this system with the GEX attached, ready to be used
-        for inversion and forward modelling. Systems that describe the
+        for inversion and forward modeling. Systems that describe the
         instrument entirely in code (e.g. SyntheticTEMXYZSystem) do not use
         the GEX, but accept and ignore it here so the calling convention is
         the same for every system."""
@@ -1248,11 +1251,14 @@ class XYZSystem(object):
         line_col = self.xyz.line_id_column
         try:
             xyzsparse.model_info["doi_check"] = doi_base_check(
-                doi[:, 0], doi[:, 1], depth_top,
+                doi[:, 0],
+                doi[:, 1],
+                depth_top,
                 xyzsparse.flightlines[line_col].values if line_col else None,
-                self.doi__base_warning)
+                self.doi__base_warning,
+            )
         except Exception as err:
-            warnings.warn("DOI base check not written: %s" % err)
+            warnings.warn("DOI base check not written: %s" % err, stacklevel=2)
         print(f"##PHASE## doi: {time.time() - t0:.2f}s")
 
     def inverted_model_to_xyz(self, model, thicknesses, dpred=None):
@@ -1270,7 +1276,8 @@ class XYZSystem(object):
         """
         xyzsparse = libaarhusxyz.XYZ()
         xyzsparse.model_info.update(self.xyz.model_info)
-        xyzsparse.model_info.pop("doi_check", None)   # an input model's check is not this model's
+        # an input model's check is not this model's
+        xyzsparse.model_info.pop("doi_check", None)
         xyzsparse.flightlines = self._flightlines_without_input_misfit()
         xyzsparse.layer_data["resistivity"] = 1 / np.exp(pd.DataFrame(
             model.reshape((len(self.xyz.flightlines),
@@ -1489,7 +1496,7 @@ class XYZSystem(object):
         return self.xyz.unfilter(self.pad_times(xyzresp, self.times_full, self.times_filter), layerfilter=False)
     
     def forward(self, **kw):
-        """Does a forward modelling of the model in the XYZ file using
+        """Does a forward modeling of the model in the XYZ file using
         this system description. Returns data in xyz format."""
         # self.inv.invProb.dmisfit.simulation
 

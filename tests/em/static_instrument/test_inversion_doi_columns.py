@@ -16,7 +16,10 @@ import pytest
 
 import libaarhusxyz
 
-from simpeg.electromagnetics.utils.doi_utils import doi_base_check, doi_christiansen_auken
+from simpeg.electromagnetics.utils.doi_utils import (
+    doi_base_check,
+    doi_christiansen_auken,
+)
 from simpeg.electromagnetics.utils.static_instrument import base, dual
 
 
@@ -171,14 +174,16 @@ DEPTH_TOP = np.r_[0.0, np.cumsum(THICKNESSES)]
 
 
 def expected_check(doi, threshold=0.05):
-    return doi_base_check(doi[:, 0], doi[:, 1], DEPTH_TOP, np.zeros(KEEP.sum(), dtype=int), threshold)
+    return doi_base_check(
+        doi[:, 0], doi[:, 1], DEPTH_TOP, np.zeros(KEEP.sum(), dtype=int), threshold
+    )
 
 
 def test_model_carries_its_base_check(capsys):
     s, dmis, final, _ = run_outputs()
     check = s.l2.model_info["doi_check"]
     assert check == expected_check(direct(s, dmis, final)[0])
-    assert check["run"]["n_soundings"] == KEEP.sum()        # the inverted soundings
+    assert check["run"]["n_soundings"] == KEEP.sum()  # the inverted soundings
     assert list(check["lines"]) == ["0"]
     out = capsys.readouterr().out
     assert "##DOI_CHECK## l2 model: lower DOI at the base on" in out
@@ -195,15 +200,21 @@ def test_smooth_and_sparse_models_each_carry_their_own_check(capsys):
 
 def test_warning_threshold_is_a_parameter():
     s, dmis, final, _ = run_outputs(doi__base_warning=0.2)
-    assert s.l2.model_info["doi_check"] == expected_check(direct(s, dmis, final)[0], 0.2)
+    assert s.l2.model_info["doi_check"] == expected_check(
+        direct(s, dmis, final)[0], 0.2
+    )
 
 
 def test_check_survives_msgpack(tmp_path):
     import libaarhusxyz.export.msgpack
+
     s, *_ = run_outputs(irls=True)
     path = str(tmp_path / "model.msgpack")
     libaarhusxyz.export.msgpack.dump(s.sparse, path)
-    assert libaarhusxyz.export.msgpack.load(path).model_info["doi_check"] == s.sparse.model_info["doi_check"]
+    assert (
+        libaarhusxyz.export.msgpack.load(path).model_info["doi_check"]
+        == s.sparse.model_info["doi_check"]
+    )
 
 
 def test_no_check_without_the_doi():
@@ -216,8 +227,11 @@ def test_an_input_models_check_is_not_carried_over():
     s._xyz.model_info["doi_check"] = {"run": "from an earlier model"}
     dmis = s.make_misfit(THICKNESSES)
     model = model_of(10.0)
-    s.inv = SimpleNamespace(invProb=SimpleNamespace(dmisfit=dmis, model=model,
-                                                    dpred=dmis.simulation.dpred(model)))
+    s.inv = SimpleNamespace(
+        invProb=SimpleNamespace(
+            dmisfit=dmis, model=model, dpred=dmis.simulation.dpred(model)
+        )
+    )
     s.make_inversion_outputs()
     assert "doi_check" not in s.l2.model_info
 
@@ -225,6 +239,7 @@ def test_an_input_models_check_is_not_carried_over():
 def test_a_failing_check_warns_and_the_doi_survives(monkeypatch):
     def broken(*args, **kw):
         raise ValueError("no layers")
+
     monkeypatch.setattr(base, "doi_base_check", broken)
     with pytest.warns(UserWarning, match="DOI base check not written: no layers"):
         s, *_ = run_outputs()
