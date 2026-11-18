@@ -335,11 +335,12 @@ class XYZSystem(object):
         instrument entirely in code (e.g. SyntheticTEMXYZSystem) do not use
         the GEX, but accept and ignore it here so the calling convention is
         the same for every system."""
+
         class GexSystem(cls):
             pass
+
         GexSystem.gex = gex
         return GexSystem
-
 
     sounding_filter = slice(None, None, None)
 
@@ -1237,12 +1238,18 @@ class XYZSystem(object):
         try:
             W = self.data_misfit.W.diagonal()
             with np.errstate(divide="ignore"):
-                rel = np.abs(1 / W / self.data_misfit.data.dobs)   # inf where W is 0: not used
+                # inf where W is 0: not used
+                rel = np.abs(1 / W / self.data_misfit.data.dobs)
             doi, S, depth_top = doi_christiansen_auken(
-                self.data_misfit.simulation, model, rel,
-                (self.doi__upper, self.doi__lower), self.doi__weighted, d_pred=dpred)
+                self.data_misfit.simulation,
+                model,
+                rel,
+                (self.doi__upper, self.doi__lower),
+                self.doi__weighted,
+                d_pred=dpred,
+            )
         except Exception as err:
-            warnings.warn("DOI not written: %s" % err)
+            warnings.warn("DOI not written: %s" % err, stacklevel=2)
             return
         xyzsparse.flightlines["doi_upper"] = doi[:, 0]
         xyzsparse.flightlines["doi_lower"] = doi[:, 1]
@@ -1279,9 +1286,13 @@ class XYZSystem(object):
         # an input model's check is not this model's
         xyzsparse.model_info.pop("doi_check", None)
         xyzsparse.flightlines = self._flightlines_without_input_misfit()
-        xyzsparse.layer_data["resistivity"] = 1 / np.exp(pd.DataFrame(
-            model.reshape((len(self.xyz.flightlines),
-                           len(model) // len(self.xyz.flightlines)))))
+        xyzsparse.layer_data["resistivity"] = 1 / np.exp(
+            pd.DataFrame(
+                model.reshape(
+                    (len(self.xyz.flightlines), len(model) // len(self.xyz.flightlines))
+                )
+            )
+        )
 
         dep_top = np.cumsum(np.concatenate(([0], thicknesses)))
         dep_bot = np.concatenate((dep_top[1:], [np.inf]))
@@ -1372,14 +1383,24 @@ class XYZSystem(object):
                 for message in doi_check_messages(obj.model_info["doi_check"], name):
                     print(message)
 
-        if hasattr(self, '_cluster_ids'):
+        if hasattr(self, "_cluster_ids"):
             # Map cluster IDs back to the full (unfiltered) sounding set
-            cluster_id_full = pd.Series(np.nan, index=self._xyz.flightlines.index, dtype=float)
-            cluster_id_full.loc[self.xyz.flightlines.index] = self._cluster_ids.astype(float)
-            for obj in [self.sparse, self.l2, self.l2pred, self.sparsepred, self.corrected]:
+            cluster_id_full = pd.Series(
+                np.nan, index=self._xyz.flightlines.index, dtype=float
+            )
+            cluster_id_full.loc[self.xyz.flightlines.index] = self._cluster_ids.astype(
+                float
+            )
+            for obj in [
+                self.sparse,
+                self.l2,
+                self.l2pred,
+                self.sparsepred,
+                self.corrected,
+            ]:
                 if obj is not None:
                     obj.flightlines = obj.flightlines.copy()
-                    obj.flightlines['cluster_id'] = cluster_id_full.values
+                    obj.flightlines["cluster_id"] = cluster_id_full.values
 
         # final_beta is what a later warm start from these outputs reads back;
         # startmodel_report says how this run's own start was made.
@@ -1493,8 +1514,11 @@ class XYZSystem(object):
         for idx, t in enumerate(self.times):
             xyzresp.model_info["gate times for channel %s" % (idx + 1)] = list(t)
 
-        return self.xyz.unfilter(self.pad_times(xyzresp, self.times_full, self.times_filter), layerfilter=False)
-    
+        return self.xyz.unfilter(
+            self.pad_times(xyzresp, self.times_full, self.times_filter),
+            layerfilter=False,
+        )
+
     def forward(self, **kw):
         """Does a forward modeling of the model in the XYZ file using
         this system description. Returns data in xyz format."""

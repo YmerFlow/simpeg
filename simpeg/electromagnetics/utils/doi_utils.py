@@ -245,8 +245,9 @@ def doi_christiansen_auken(simulation, model, relative_uncertainty, thresholds=(
     >>> doi, S, z = doi_christiansen_auken(sim, inv_model, uncert / np.abs(dobs))
     >>> doi_upper, doi_lower = doi.T
     """
-    S, depth_top = stitched_cumulative_sensitivity(simulation, model, relative_uncertainty,
-                                                   weighted, d_pred)
+    S, depth_top = stitched_cumulative_sensitivity(
+        simulation, model, relative_uncertainty, weighted, d_pred
+    )
     doi = np.column_stack([doi_from_cumulative(S, depth_top, t) for t in thresholds])
     return doi, S, depth_top
 
