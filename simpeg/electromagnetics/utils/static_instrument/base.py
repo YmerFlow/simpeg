@@ -26,7 +26,11 @@ from simpeg.utils import mkvc
 import simpeg.electromagnetics.time_domain as tdem
 import simpeg.electromagnetics.utils.em1d_utils
 from simpeg.electromagnetics.utils.em1d_utils import get_vertical_discretization_time
-from simpeg.electromagnetics.utils.doi_utils import doi_christiansen_auken
+from simpeg.electromagnetics.utils.doi_utils import (
+    doi_base_check,
+    doi_check_messages,
+    doi_christiansen_auken,
+)
 from simpeg.regularization import LaterallyConstrained
 
 from .thickness import build_log_spaced_layer_thick
@@ -281,7 +285,7 @@ class XYZSystem(object):
     A subclass can then be instantiated together with an XYZ file
     structure with raw data read using libaarhusxyz.XYZ(), to form an
     invertible object, or with a model read using the same library to
-    do forward modelling.
+    do forward modeling.
 
     Basic usage:
 
@@ -327,7 +331,7 @@ class XYZSystem(object):
     def load_gex(cls, gex):
         """Accepts a GEX file loaded using libaarhusxyz.GEX() and returns a
         new subclass of this system with the GEX attached, ready to be used
-        for inversion and forward modelling. Systems that describe the
+        for inversion and forward modeling. Systems that describe the
         instrument entirely in code (e.g. SyntheticTEMXYZSystem) do not use
         the GEX, but accept and ignore it here so the calling convention is
         the same for every system."""
@@ -1218,9 +1222,13 @@ class XYZSystem(object):
     "False (default): a layer's sensitivity is the sum of |d ln d / d ln sigma| over the gates used, the scale Aarhus Workbench reports and the default thresholds belong to. True: each term is also divided by the gate's relative uncertainty, eq. 3 of the paper as printed; with the default thresholds the DOI then sits at or near the model base."
     doi__write_sensitivity: bool = True
     "Also write the cumulative sensitivity (dimensionless; each layer plus everything below it, at the layer top) as the layer table cumulative_sensitivity, for QC plots or for fading the model with depth."
+    doi__base_warning: float = 0.05
+    """Share of a line's soundings (of those with a DOI) whose lower DOI may sit at the model base before the run log warns that the base is too shallow. 1 never warns.
+
+    With the DOI, each model gets model_info["doi_check"]: per line and for the run, the share of soundings whose upper and lower DOI lie within half a bottom-layer thickness of the half-space top, the 90th percentile of the lower DOI as a fraction of the base depth, and the share whose upper DOI is inside the first layer. The log gets a ##DOI_CHECK## summary per model. See doi_base_check in simpeg.electromagnetics.utils.doi_utils."""
 
     def _add_doi(self, xyzsparse, model, dpred):
-        """Put the DOI of ``model`` [m, positive down] on its model, still in filtered sounding order.
+        """Put the DOI of ``model`` [m, positive down] and its base check on its model, still in filtered sounding order.
 
         Warns instead of raising: the DOI is derived from the model and must never cost it.
         """
@@ -1230,7 +1238,7 @@ class XYZSystem(object):
             W = self.data_misfit.W.diagonal()
             with np.errstate(divide="ignore"):
                 rel = np.abs(1 / W / self.data_misfit.data.dobs)   # inf where W is 0: not used
-            doi, S, _ = doi_christiansen_auken(
+            doi, S, depth_top = doi_christiansen_auken(
                 self.data_misfit.simulation, model, rel,
                 (self.doi__upper, self.doi__lower), self.doi__weighted, d_pred=dpred)
         except Exception as err:
@@ -1240,6 +1248,17 @@ class XYZSystem(object):
         xyzsparse.flightlines["doi_lower"] = doi[:, 1]
         if self.doi__write_sensitivity:
             xyzsparse.layer_data["cumulative_sensitivity"] = pd.DataFrame(S)
+        line_col = self.xyz.line_id_column
+        try:
+            xyzsparse.model_info["doi_check"] = doi_base_check(
+                doi[:, 0],
+                doi[:, 1],
+                depth_top,
+                xyzsparse.flightlines[line_col].values if line_col else None,
+                self.doi__base_warning,
+            )
+        except Exception as err:
+            warnings.warn("DOI base check not written: %s" % err, stacklevel=2)
         print(f"##PHASE## doi: {time.time() - t0:.2f}s")
 
     def inverted_model_to_xyz(self, model, thicknesses, dpred=None):
@@ -1257,6 +1276,8 @@ class XYZSystem(object):
         """
         xyzsparse = libaarhusxyz.XYZ()
         xyzsparse.model_info.update(self.xyz.model_info)
+        # an input model's check is not this model's
+        xyzsparse.model_info.pop("doi_check", None)
         xyzsparse.flightlines = self._flightlines_without_input_misfit()
         xyzsparse.layer_data["resistivity"] = 1 / np.exp(pd.DataFrame(
             model.reshape((len(self.xyz.flightlines),
@@ -1345,6 +1366,11 @@ class XYZSystem(object):
             self.sparsepred = None
             self.l2 = last_model
             self.l2pred = last_pred
+
+        for name, obj in (("l2", self.l2), ("sparse", self.sparse)):
+            if obj is not None and "doi_check" in obj.model_info:
+                for message in doi_check_messages(obj.model_info["doi_check"], name):
+                    print(message)
 
         if hasattr(self, '_cluster_ids'):
             # Map cluster IDs back to the full (unfiltered) sounding set through
@@ -1472,7 +1498,7 @@ class XYZSystem(object):
         return self.xyz.unfilter(self.pad_times(xyzresp, self.times_full, self.times_filter), layerfilter=False)
     
     def forward(self, **kw):
-        """Does a forward modelling of the model in the XYZ file using
+        """Does a forward modeling of the model in the XYZ file using
         this system description. Returns data in xyz format."""
         # self.inv.invProb.dmisfit.simulation
 
