@@ -154,10 +154,11 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
     simulation__receiver_filters: bool = True
     """Apply the receiver low-pass filters the GEX declares.
 
-    A GEX can describe up to two first-order low-pass filters between the
+    A GEX can describe up to two low-pass filters between the
     receiver coil and the recorded gate: the coil filter
     (``General/RxCoilLPFilter1``) and a per-channel board filter
-    (``Channel<n>/TiBLowPassFilter``), each written as ``<order> <cutoff Hz>``.
+    (``Channel<n>/TiBLowPassFilter``), each written as ``<order> <cutoff Hz>``,
+    the order read as AarhusInv reads it (``receiver_filters``).
     They shape the earliest gates strongly: on the SkyTEM 304 (210 kHz and
     300 kHz) leaving them out puts the forward 20% low at 8-13 us and 3% low
     at 300 us against Workbench's forward of the same model, which an
@@ -171,7 +172,11 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
         """The low-pass filters the GEX declares for a channel number.
 
         Returns ``[(order, cutoff_hz), ...]`` with up to two entries, coil filter
-        first; an entry is omitted where the GEX does not declare it.
+        first; an entry is omitted where the GEX does not declare it, or
+        declares an order of 0 or below, which is no filter (the Workbench
+        layout writes ``TiBLowPassFilter=-1 1`` for no board filter). An integer
+        order n of 1 or more is a Butterworth filter of order n
+        (``time_domain.receivers.gex_low_pass_response``).
         libaarhusxyz folds the trailing digit of ``RxCoilLPFilter1`` into the
         key, so the coil filter is read as ``RxCoilLPFilter``.
         """
@@ -187,6 +192,8 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
             if spec.size != 2 or spec[1] <= 0:
                 raise ValueError(
                     "GEX low-pass filter must be '<order> <cutoff Hz>', got %r" % (spec,))
+            if spec[0] <= 0:
+                continue
             filters.append((float(spec[0]), float(spec[1])))
         return filters
 

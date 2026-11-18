@@ -126,6 +126,25 @@ def test_malformed_filter_line_is_refused():
         system(FakeGEX(coil=np.array([210e3]))).receiver_filters(1)
 
 
+def test_order_two_is_read():
+    s = system(FakeGEX(coil=np.array([2.0, 25.2e3])))
+    assert s.receiver_filters(1) == [(2.0, 25.2e3)]
+
+
+@pytest.mark.parametrize("order", [-1.0, 0.0])
+def test_order_zero_or_below_is_no_filter(order):
+    """The Workbench layout writes ``TiBLowPassFilter=-1 1`` for no board filter."""
+    s = system(FakeGEX(coil=np.array([0.99, 210e3]), board=np.array([order, 1.0])))
+    assert s.receiver_filters(1) == [(0.99, 210e3)]
+    (rx,) = receivers(s)
+    assert rx.lp_power_1 == 0.99 and rx.lp_power_2 == 0
+
+
+def test_order_above_one_must_be_an_integer():
+    with pytest.raises(ValueError, match="integer"):
+        receivers(system(FakeGEX(coil=np.array([1.5, 200e3]))))
+
+
 # ── Reaching the receivers ───────────────────────────────────────────────────
 
 def test_central_loop_receiver_carries_the_declared_filters():
