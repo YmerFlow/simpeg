@@ -4,6 +4,7 @@ from .receivers import (
     PointMagneticFluxDensity,
     PointMagneticField,
     PointMagneticFluxTimeDerivative,
+    gex_low_pass_response,
 )
 import numpy as np
 
@@ -388,15 +389,14 @@ class Simulation1DLayered(BaseEM1DSimulation):
                 numer, denom = signal.butter(rx.bw_power, wc_bw, "low", analog=True)
                 _, h_bw = signal.freqs(numer, denom, worN=w)
                 h = h_lp * h_bw
-                # Cascaded first-order low pass stages declared by the GEX
-                # (e.g. SkyTEM coil + board filters). Powers default to 0, so
-                # each stage is the identity unless a receiver sets it. Uses the
-                # plain (non-angular) frequency, matching the GEX convention.
-                h *= (1 + 1j * (frequencies / rx.lp_cutoff_frequency_1)) ** (
-                    -rx.lp_power_1
+                # The receiver low-pass filters a GEX declares (e.g. SkyTEM
+                # coil and board filters), orders read as AarhusInv reads them.
+                # Orders default to 0, no filter, unless a receiver sets them.
+                h *= gex_low_pass_response(
+                    frequencies, rx.lp_power_1, rx.lp_cutoff_frequency_1
                 )
-                h *= (1 + 1j * (frequencies / rx.lp_cutoff_frequency_2)) ** (
-                    -rx.lp_power_2
+                h *= gex_low_pass_response(
+                    frequencies, rx.lp_power_2, rx.lp_cutoff_frequency_2
                 )
 
                 if v.ndim == 3:
