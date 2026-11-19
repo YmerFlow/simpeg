@@ -1,8 +1,8 @@
 """What each GEX receiver low-pass filter order means, as AarhusInv reads it.
 
 An order of 0 is no filter, an integer n of 1 or more a Butterworth filter of
-order n, and a value between 0 and 1 a first-order stage to that power. Each
-response is checked against its formula; order 1 is the first-order stage
+order n, and a value between 0 and 1 a Gaussian-RLC filter with that damping.
+Each response is checked against its formula; order 1 is the first-order stage
 simpeg applied before, unchanged.
 """
 
@@ -41,9 +41,19 @@ def test_integer_order_is_a_butterworth(order, denominator):
     np.testing.assert_allclose(np.abs(h) ** 2, power, rtol=1e-12)
 
 
-def test_order_between_zero_and_one():
-    h = gex_low_pass_response(F, 0.99, FC)
-    np.testing.assert_allclose(h, (1 + S) ** -0.99, rtol=1e-12)
+@pytest.mark.parametrize("damping", [0.5, 0.99])
+def test_order_between_zero_and_one_is_a_gaussian_rlc(damping):
+    h = gex_low_pass_response(F, damping, FC)
+    np.testing.assert_allclose(h, 1 / (S**2 + 2 * damping * S + 1), rtol=1e-12)
+    # Gain at the cutoff is 1 / (2 * damping), lagging by a quarter turn.
+    at_cutoff = h[F == FC][0]
+    np.testing.assert_allclose(at_cutoff, -1j / (2 * damping), rtol=1e-12)
+
+
+def test_critically_damped_rlc_is_two_first_order_stages():
+    np.testing.assert_allclose(
+        gex_low_pass_response(F, 1 - 1e-12, FC), 1 / (1 + S) ** 2, rtol=1e-9
+    )
 
 
 @pytest.mark.parametrize("order", [-1, 1.5])

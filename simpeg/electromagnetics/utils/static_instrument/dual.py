@@ -175,7 +175,8 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
         first; an entry is omitted where the GEX does not declare it, or
         declares an order of 0 or below, which is no filter (the Workbench
         layout writes ``TiBLowPassFilter=-1 1`` for no board filter). An integer
-        order n of 1 or more is a Butterworth filter of order n
+        order n of 1 or more is a Butterworth filter of order n, and an order
+        between 0 and 1 a Gaussian-RLC filter with that damping
         (``time_domain.receivers.gex_low_pass_response``).
         libaarhusxyz folds the trailing digit of ``RxCoilLPFilter1`` into the
         key, so the coil filter is read as ``RxCoilLPFilter``.

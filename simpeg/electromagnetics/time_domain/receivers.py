@@ -29,7 +29,9 @@ def gex_low_pass_response(frequencies, order, cutoff_frequency):
     order : float
         Filter order as the GEX writes it [dimensionless]. 0 is no filter. An
         integer n of 1 or more is a Butterworth low-pass of order n. A value
-        between 0 and 1 is a first-order stage raised to that power.
+        z between 0 and 1 is a Gaussian-RLC filter with damping z, read as
+        the second-order low-pass ``w0**2 / (s**2 + 2 * z * w0 * s + w0**2)``
+        with ``w0 = 2 * pi * cutoff_frequency``.
     cutoff_frequency : float
         Cutoff frequency [Hz].
 
@@ -43,13 +45,26 @@ def gex_low_pass_response(frequencies, order, cutoff_frequency):
     ------
     ValueError
         If the order is negative, or above 1 and not an integer.
+
+    Notes
+    -----
+    The AarhusInv manual (version 8) names the Gaussian-RLC filter but gives
+    no formula for it. With the second-order form above for a SkyTEM coil
+    filter of 0.99 at 210 kHz, the forward of a published Workbench model
+    comes within 1-2% of Workbench's own forward at the early gates, where
+    reading 0.99 as a first-order stage left it 5-10% low.
+
+    AarhusInv applies the Gaussian-RLC filter before the front gate and the
+    other filters after it. Without a front gate in the simulation, all the
+    filters multiply the whole response, and their order does not matter.
     """
     order = _validate_filter_order("order", order)
     frequencies = np.asarray(frequencies, dtype=float)
     if order == 0:
         return np.ones(frequencies.shape, dtype=complex)
     if order < 1:
-        return (1 + 1j * frequencies / cutoff_frequency) ** (-order)
+        s = 1j * frequencies / cutoff_frequency
+        return 1 / (s**2 + 2 * order * s + 1)
     numer, denom = signal.butter(
         int(order), 2 * np.pi * cutoff_frequency, "low", analog=True
     )
@@ -230,8 +245,8 @@ class BaseRx(BaseTimeRx):
 
         ``0`` (the default) is no filter, so a receiver that never sets it is
         unaffected. An integer n of 1 or more is a Butterworth filter of order
-        n, and a value between 0 and 1 a first-order stage to that power; see
-        :func:`gex_low_pass_response`.
+        n, and a value between 0 and 1 a Gaussian-RLC filter with that
+        damping; see :func:`gex_low_pass_response`.
 
         Returns
         -------
