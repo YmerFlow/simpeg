@@ -982,30 +982,52 @@ class BFGS(Minimize, Remember):
 
     def _startup_BFGS(self, x0):
         self._bfgscnt = -1
-        self._bfgsY = np.zeros((x0.size, self.nbfgs))
-        self._bfgsS = np.zeros((x0.size, self.nbfgs))
+        # One row per stored pair, so that every s_k and y_k is contiguous.
+        self._bfgsY = np.zeros((self.nbfgs, x0.size))
+        self._bfgsS = np.zeros((self.nbfgs, x0.size))
+        self._bfgsYS = np.zeros(self.nbfgs)  # y_k . s_k, computed once per pair
         if not np.any([p is IterationPrinters.comment for p in self.printers]):
             self.printers.append(IterationPrinters.comment)
 
-    def bfgs(self, d):
-        n = self._bfgscnt
-        nn = ktop = min(self._bfgsS.shape[1], n)
-        return self.bfgsrec(ktop, n, nn, self._bfgsS, self._bfgsY, d)
+    def _bfgs_order(self):
+        """Indices of the stored pairs in the order they are applied, outermost first.
 
-    def bfgsrec(self, k, n, nn, S, Y, d):
-        """BFGS recursion"""
-        if k < 0:
-            d = self.bfgsH0 * d  # Assume that bfgsH0 is a simpeg.Solver
-        else:
-            khat = 0 if nn == 0 else np.mod(n - nn + k, nn)
-            gamma = np.vdot(S[:, khat], d) / np.vdot(Y[:, khat], S[:, khat])
-            d = d - gamma * Y[:, khat]
-            d = self.bfgsrec(k - 1, n, nn, S, Y, d)
-            d = (
-                d
-                + (gamma - np.vdot(Y[:, khat], d) / np.vdot(Y[:, khat], S[:, khat]))
-                * S[:, khat]
-            )
+        This is the order of the earlier recursive form, kept so that results do not change:
+        until more pairs have been stored than the memory holds, the newest pair is left out
+        and the oldest is applied twice; after that the newest is applied twice. The textbook
+        order applies each pair once, newest outermost.
+        """
+        n = self._bfgscnt
+        nn = min(self.nbfgs, n)
+        return [0 if nn == 0 else (n - nn + k) % nn for k in range(nn, -1, -1)]
+
+    def bfgs(self, d):
+        """Apply the L-BFGS inverse Hessian approximation to ``d``.
+
+        The two-loop form of the recursion: the first loop takes the stored pairs from the
+        outermost in, then ``bfgsH0`` is applied, then the second loop goes back out.
+
+        Parameters
+        ----------
+        d : numpy.ndarray
+            Vector of the model's size.
+
+        Returns
+        -------
+        numpy.ndarray
+            The approximate inverse Hessian times ``d``.
+        """
+        S, Y, YS = self._bfgsS, self._bfgsY, self._bfgsYS
+        order = self._bfgs_order()
+        d = np.array(d, dtype=np.result_type(d, S))
+        gammas = []
+        for k in order:
+            gamma = np.dot(S[k], d) / YS[k]
+            d -= gamma * Y[k]
+            gammas.append(gamma)
+        d = self.bfgsH0 * d  # Assume that bfgsH0 is a simpeg.Solver
+        for k, gamma in zip(order[::-1], gammas[::-1]):
+            d += (gamma - np.dot(Y[k], d) / YS[k]) * S[k]
         return d
 
     def findSearchDirection(self):
@@ -1020,11 +1042,13 @@ class BFGS(Minimize, Remember):
         ss = self.xc - xt
         self.g_last = self.g
 
-        if yy.dot(ss) > 0:
+        ys = yy.dot(ss)
+        if ys > 0:
             self._bfgscnt += 1
             ktop = np.mod(self._bfgscnt, self.nbfgs)
-            self._bfgsY[:, ktop] = yy
-            self._bfgsS[:, ktop] = ss
+            self._bfgsY[ktop] = yy
+            self._bfgsS[ktop] = ss
+            self._bfgsYS[ktop] = ys
             self.comment = ""
         else:
             self.comment = "Skip BFGS"
