@@ -148,7 +148,7 @@ class MisfitDrivenBetaSchedule(InversionDirective):
         if action in ("cool", "floor"):
             self._cooled_in_window += 1
         if len(self._phi_d_trail) > self.stall_iterations + 1:
-            dropped = self._phi_d_trail.pop(0)
+            self._phi_d_trail.pop(0)
         if len(self._phi_d_trail) == self.stall_iterations + 1 and self._cooled_in_window >= self.stall_iterations:
             window_progress = (self._phi_d_trail[0] - phi_d) / self._phi_d_trail[0]
             if window_progress < self.stall_progress:
