@@ -30,7 +30,13 @@ from simpeg.electromagnetics.utils.doi_utils import doi_christiansen_auken
 from simpeg.regularization import LaterallyConstrained
 
 from .thickness import build_log_spaced_layer_thick
-from .schedules import MisfitDrivenBetaSchedule, RecordBeta, StartingBeta
+from .schedules import (
+    BetaFloor,
+    MisfitDrivenBetaSchedule,
+    RecordBeta,
+    RelativeNormChangeStop,
+    StartingBeta,
+)
 from .smoothness import (
     crs_unit, inline_links, length_scale_of, otherline_links, resolve_pair)
 from .utils import (detect_cpu_availability, describe_layers, lateral_median, layer_tops,
@@ -1073,8 +1079,8 @@ class XYZSystem(object):
     "Starting beta, used as given in place of an estimate. Leave blank (default) to estimate it: beta0_ratio times the eigenvalue estimate on a cold start, warm_factor times the start models' recorded final_beta on a warm start."
     directives__beta__warm_factor : float = 3.
     "Warm start only (startmodel__dataset): the starting beta is this factor times the final_beta the start models recorded (their median, when there are several). Above 1 it gives the regularization room to reshape the start, for example to remove line-to-line differences, before beta cools again; too high and the first iterations smooth away the fit the start brought. If no start model records final_beta, beta is estimated from beta0_ratio instead and the log says so."
-    directives__beta__schedule : typing.Literal['fixed', 'misfit'] = 'fixed'
-    "How the regularization weight (beta) is reduced between Gauss-Newton iterations. 'fixed': divide by cooling_factor every cooling_rate iterations regardless of progress (the classic schedule). 'misfit': hold beta while the data misfit is still improving by more than progress_threshold per iteration, cool when it plateaus by cooling_factor (optionally scaled by the misfit ratio, see ratio_cap), never below beta_min_ratio times the starting beta, and stop when stall_iterations iterations of cooling improved the misfit by less than stall_progress. 'misfit' typically reaches the target in fewer iterations and stops cleanly when the data cannot be fit instead of running to max_iter."
+    directives__beta__schedule: typing.Literal["fixed", "misfit", "none"] = "fixed"
+    "How the regularization weight (beta) is reduced between Gauss-Newton iterations. 'fixed': divide by cooling_factor every cooling_rate iterations regardless of progress (the classic schedule). 'misfit': hold beta while the data misfit is still improving by more than progress_threshold per iteration, cool when it plateaus by cooling_factor (optionally scaled by the misfit ratio, see ratio_cap), never below beta_min (or beta_min_ratio times the starting beta), and stop when stall_iterations iterations of cooling improved the misfit by less than stall_progress. 'misfit' typically reaches the target in fewer iterations and stops cleanly when the data cannot be fit instead of running to max_iter. 'none': beta stays at its starting value for the whole run; with beta0 given, that is one beta for every line of a survey. Pair it with directives__target__enable False and optimizer__rel_norm_change to stop on convergence at that beta and read the misfit as QC."
     directives__beta__cooling_factor : float = 2.
     "Factor by which the regularization weight (beta) is divided at each cooling step. Default 2 halves beta each step. Larger values (4–10) cool faster and may converge in fewer iterations but risk overshooting the data misfit target. With schedule='misfit' this is the base factor, multiplied by the misfit ratio when far from the target."
     directives__beta__cooling_rate=1
@@ -1089,6 +1095,12 @@ class XYZSystem(object):
     "schedule='misfit' only. Length of the window, in iterations, over which the data misfit must improve by at least stall_progress while beta is being cooled; otherwise the inversion stops with the reason in the log. Default 6."
     directives__beta__stall_progress : float = 0.05
     "schedule='misfit' only. Minimum fractional improvement of the data misfit over the stall window for the inversion to continue. Default 0.05 (5%)."
+    directives__beta__beta_min: float = None
+    "Absolute floor on beta: the schedule cools as usual but never below it, and holds beta there once reached, so every line of a survey can end at the same beta. A starting beta below it is raised to it. With schedule='misfit' it takes the place of beta_min_ratio. Leave blank (default) for no absolute floor."
+    directives__target__enable: bool = True
+    "Stop the inversion when the data misfit reaches its target (chifact times the data in use). Default True. False keeps the target for the schedule to read, but the run goes on to optimizer__rel_norm_change or max_iter, and the misfit it ends with is reported as QC."
+    directives__target__chifact: float = 1.0
+    "Target data misfit as a multiple of the number of data in use: phi_d target = chifact x N. Default 1, an RMS misfit of 1."
     directives__irls__enable = False
     "Enable sparse (IRLS) inversion after the smooth L2 model converges. IRLS produces a model with sharper layer boundaries by iteratively reweighting the regularization. The smooth L2 model is always produced first and saved regardless."
     directives__irls__max_iterations = 30
@@ -1129,22 +1141,40 @@ class XYZSystem(object):
                                                          seed=self.directives__beta__seed)
             print('setting manual random seed for repeatabillity')
         else:
-            BetaEstimate = directives.BetaEstimate_ByEig(beta0_ratio=self.directives__beta__beta0_ratio)
-        if self.directives__beta__schedule == 'misfit':
+            BetaEstimate = directives.BetaEstimate_ByEig(
+                beta0_ratio=self.directives__beta__beta0_ratio
+            )
+        if self.directives__beta__schedule == "none":
+            schedule = None
+        elif self.directives__beta__schedule == "misfit":
             schedule = MisfitDrivenBetaSchedule(
                 progress_threshold=self.directives__beta__progress_threshold,
                 cooling_factor=self.directives__beta__cooling_factor,
                 ratio_cap=self.directives__beta__ratio_cap,
                 beta_min_ratio=self.directives__beta__beta_min_ratio,
+                beta_min=self.directives__beta__beta_min,
                 stall_iterations=self.directives__beta__stall_iterations,
                 stall_progress=self.directives__beta__stall_progress)
         else:
             schedule = simpeg.directives.BetaSchedule(coolingFactor=self.directives__beta__cooling_factor,
                                                       coolingRate=self.directives__beta__cooling_rate)
-        dirs = [
-            BetaEstimate,
-            schedule,
-            TargetMisfitInUse()]
+        target = TargetMisfitInUse(chifact=self.directives__target__chifact)
+        target.stop = self.directives__target__enable
+
+        dirs = [BetaEstimate]
+        if self.optimizer__rel_norm_change is not None:
+            if self.directives__irls__enable:
+                raise ValueError(
+                    "optimizer__rel_norm_change stops the smooth inversion at a held beta; with "
+                    "directives__irls__enable the IRLS stop rules apply instead, so set only one"
+                )
+            # before the schedule, so it reads the beta each iteration was solved with
+            dirs.append(RelativeNormChangeStop(self.optimizer__rel_norm_change))
+        if schedule is not None:
+            dirs.append(schedule)
+        if self.directives__beta__beta_min is not None:
+            dirs.append(BetaFloor(self.directives__beta__beta_min))
+        dirs.append(target)
 
         #            directives.SaveOutputEveryIteration(save_txt=False),
         if self.directives__irls__enable:
@@ -1165,11 +1195,38 @@ class XYZSystem(object):
         
     optimizer__max_iter=50
     "Maximum number of Gauss-Newton outer iterations. The inversion will stop early if the TargetMisfit directive is satisfied (data fit is good enough). With beta0_ratio=10 and cooling_rate=1, convergence in 20–35 iterations is typical. Increase to 60–80 only if the inversion is still improving at the limit."
+    optimizer__rel_norm_change: float = None
+    "Stop when the objective function (phi_d + beta x phi_m) fell by less than this fraction from one iteration to the next at the same beta: converged at that beta. Named after AarhusInv's RelNormChange. Only tested between iterations with the same beta, so it suits schedule 'none', or a schedule holding beta on beta_min. Leave blank (default) for no such stop; 0.01 (1%) is a reasonable start. Not with directives__irls__enable."
     optimizer__max_iter_cg=20
     "Maximum conjugate gradient (CG) iterations for the inner linear solve at each Gauss-Newton step. Increase if you see poor model updates per outer iteration, which can indicate a poorly conditioned problem. Default 20 is sufficient for most AEM problems."
     def make_optimizer(self):
         return optimization.InexactGaussNewton(maxIter = self.optimizer__max_iter, maxIterCG=self.optimizer__max_iter_cg)
     
+    def _print_final_misfit(self):
+        """Print the misfit the run ended with against its target, so it reads as QC."""
+        target = next(
+            (
+                d
+                for d in self.inv.directiveList.dList
+                if isinstance(d, TargetMisfitInUse)
+            ),
+            None,
+        )
+        phi_d = float(self.inv.invProb.phi_d)
+        if target is None or not target.phi_d_star:
+            return
+        n_used = target.phi_d_star
+        print(
+            "##MISFIT## final phi_d %.6g = %.3g x the target %.6g; RMS misfit %.3g over %d data in use"
+            % (
+                phi_d,
+                phi_d / target.target,
+                target.target,
+                np.sqrt(phi_d / n_used),
+                n_used,
+            )
+        )
+
     def make_inversion(self):
         thicknesses = self.make_thicknesses()
 
@@ -1313,6 +1370,7 @@ class XYZSystem(object):
         startmodel = _t("make_startmodel", lambda: self.make_startmodel(thicknesses))
         _t("inv.run (BetaEstimate + Gauss-Newton iterations)",
            lambda: self.inv.run(startmodel))
+        self._print_final_misfit()
 
         _pr.disable()
         for _sk in ("cumulative", "tottime"):
