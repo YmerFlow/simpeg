@@ -38,8 +38,10 @@ class MisfitDrivenBetaSchedule(InversionDirective):
     * **Plateau.** Otherwise cool: divide beta by
       ``cooling_factor * min(ratio_cap, phi_d / target)``. Far from the target
       the schedule cools hard; near it, by the base factor alone.
-    * **Floor.** Beta never drops below ``beta_min_ratio`` times the starting
-      beta. A plateau on the floor is a stall, not silent continuation.
+    * **Floor.** Beta never drops below ``beta_min`` when given, else
+      ``beta_min_ratio`` times the starting beta. A plateau on the floor is a
+      stall, not silent continuation. A cooling factor of 1, which leaves beta
+      where it was, counts as a hold, not a cooling step.
     * **Stall stop.** If the data misfit has improved by less than
       ``stall_progress`` (a fraction) over the last ``stall_iterations``
       iterations while cooling was being applied, the inversion stops with the
@@ -61,6 +63,7 @@ class MisfitDrivenBetaSchedule(InversionDirective):
     cooling_factor = 2.0
     ratio_cap = 1.0          # >1 multiplies the cooling factor by min(ratio_cap, phi_d/target); 1 = off
     beta_min_ratio = 1e-8
+    beta_min = None  # absolute floor; takes the place of beta_min_ratio when given
     stall_iterations = 6
     stall_progress = 0.05
     verbose = True
@@ -89,6 +92,8 @@ class MisfitDrivenBetaSchedule(InversionDirective):
 
     @property
     def beta_floor(self):
+        if self.beta_min is not None:
+            return float(self.beta_min)
         return self._beta0 * self.beta_min_ratio if self._beta0 is not None else 0.0
 
     def endIter(self):
@@ -126,7 +131,8 @@ class MisfitDrivenBetaSchedule(InversionDirective):
                 factor *= min(self.ratio_cap, max(1.0, phi_d / target))
             new_beta = max(beta / factor, self.beta_floor)
             self.invProb.beta = new_beta
-            action = "cool"
+            # a factor of 1 leaves beta where it was: that is a hold, not a cooling step
+            action = "cool" if new_beta < beta else "hold"
 
         self._record(phi_d, progress, beta, new_beta, action)
         if self.verbose:
@@ -146,12 +152,24 @@ class MisfitDrivenBetaSchedule(InversionDirective):
         if len(self._phi_d_trail) == self.stall_iterations + 1 and self._cooled_in_window >= self.stall_iterations:
             window_progress = (self._phi_d_trail[0] - phi_d) / self._phi_d_trail[0]
             if window_progress < self.stall_progress:
+                where = (
+                    "sat on its floor of %.3g"
+                    if action == "floor"
+                    else "was cooled to %.3g"
+                ) % new_beta
                 self.stopped_reason = (
-                    "the data misfit improved only %.1f%% over the last %d iterations while beta was cooled to %.3g "
+                    "the data misfit improved only %.1f%% over the last %d iterations while beta %s "
                     "(phi_d=%.4g, target=%.4g). Cooling is not buying misfit: either the data cannot be fit to the "
                     "target at this noise level or discretization, or the optimizer is step-limited (watch the line-search "
                     "count); a better start model or step damping, not a lower beta, is the remedy"
-                    % (100 * window_progress, self.stall_iterations, new_beta, phi_d, target))
+                    % (
+                        100 * window_progress,
+                        self.stall_iterations,
+                        where,
+                        phi_d,
+                        target,
+                    )
+                )
                 self.opt.stopNextIteration = True
                 print("MisfitDrivenBetaSchedule stopping: " + self.stopped_reason)
         if action == "hold":
@@ -192,6 +210,83 @@ class StartingBeta(InversionDirective):
         self.invProb.beta = self.beta0
 
 
+class BetaFloor(InversionDirective):
+    """Keep beta at or above an absolute floor, for schedules that have none.
+
+    Place it after the schedule. It raises a starting beta below the floor at
+    ``initialize``, and after every iteration puts beta back on the floor if
+    the schedule took it lower.
+
+    Parameters
+    ----------
+    beta_min : float
+        The floor on beta [dimensionless].
+    """
+
+    def __init__(self, beta_min, **kwargs):
+        super().__init__(**kwargs)
+        self.beta_min = float(beta_min)
+
+    def initialize(self):
+        self._clamp()
+
+    def endIter(self):
+        self._clamp()
+
+    def _clamp(self):
+        """Put beta back on the floor if it is below it."""
+        if self.invProb.beta < self.beta_min:
+            self.invProb.beta = self.beta_min
+
+
+class RelativeNormChangeStop(InversionDirective):
+    """Stop when the objective function stops falling at a held beta.
+
+    After each iteration the total objective, phi_d + beta * phi_m, is
+    compared with the previous iteration's. If beta was the same for both and
+    the objective fell by less than ``rel_change`` of its previous value, the
+    run stops, with the reason in :attr:`stopped_reason` and in the log. This
+    is AarhusInv's ``RelNormChange`` test on the total norm. Across a change of
+    beta the objective changes by itself, so no test is made there.
+
+    Place it before any directive that changes beta, so it reads the beta the
+    iteration was solved with.
+
+    Parameters
+    ----------
+    rel_change : float
+        Smallest relative fall of the objective that keeps the run going
+        [fraction, e.g. 0.01 for 1%].
+    """
+
+    def __init__(self, rel_change, **kwargs):
+        super().__init__(**kwargs)
+        self.rel_change = float(rel_change)
+
+    def initialize(self):
+        self._previous = None  # (beta, objective) at the last iteration
+        self.stopped_reason = None
+
+    def endIter(self):
+        beta = float(self.invProb.beta)
+        objective = float(self.invProb.phi_d) + beta * float(self.invProb.phi_m)
+        previous, self._previous = self._previous, (beta, objective)
+        if previous is None or previous[0] != beta or not _is_positive(previous[1]):
+            return
+        change = (previous[1] - objective) / previous[1]
+        if change < self.rel_change:
+            self.stopped_reason = (
+                "the objective fell by %.3g%% at beta %.4g (from %.6g to %.6g), less than "
+                "optimizer__rel_norm_change %.3g%%: converged at this beta"
+                % (100 * change, beta, previous[1], objective, 100 * self.rel_change)
+            )
+            self.opt.stopNextIteration = True
+            print(
+                "RelativeNormChangeStop it=%d: %s"
+                % (self.opt.iter, self.stopped_reason)
+            )
+
+
 class RecordBeta(InversionDirective):
     """Keep the beta the most recent Gauss-Newton iteration was solved with, as :attr:`beta`.
 
@@ -227,12 +322,39 @@ class TargetMisfitInUse(TargetMisfit):
     datum (``survey.nD``), so with empty gates it stopped a run at an RMS of
     sqrt(nD / in use) on the gates in use instead of 1 (ymerflow-business#132).
     The count is taken at ``initialize`` from the weights phi_d uses.
+
+    With ``stop`` False the target is still there for the schedule to read,
+    but reaching it doesn't stop the run; the log says so once.
     """
+
+    stop = True
+    _reached = False
 
     def initialize(self):
         dmisfits = getattr(self.invProb.dmisfit, "objfcts", [self.invProb.dmisfit])
         weights = np.concatenate([dmisfit.W.diagonal() for dmisfit in dmisfits])
         n_used = int(np.count_nonzero(weights))
         self.phi_d_star = n_used
-        print("TargetMisfit: target phi_d %.6g = chifact %g x %d data in use (%d of %d have weight 0)"
-              % (self.target, self.chifact, n_used, weights.size - n_used, weights.size))
+        self._reached = False
+        print(
+            "TargetMisfit: target phi_d %.6g = chifact %g x %d data in use (%d of %d have weight 0)%s"
+            % (
+                self.target,
+                self.chifact,
+                n_used,
+                weights.size - n_used,
+                weights.size,
+                "" if self.stop else "; reaching it does not stop the run",
+            )
+        )
+
+    def endIter(self):
+        if self.stop:
+            return super().endIter()
+        if self.invProb.phi_d < self.target and not self._reached:
+            self._reached = True
+            print(
+                "TargetMisfit: phi_d %.6g < target %.6g at iteration %d; not stopping "
+                "(directives__target__enable is False)"
+                % (self.invProb.phi_d, self.target, self.opt.iter)
+            )

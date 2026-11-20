@@ -1,6 +1,6 @@
 # One beta for a whole survey, with the misfit as QC
 
-**State:** draft 2026-11-19, decisions open
+**State:** decided 2026-11-19 (the suggested answers), built in the same branch
 **Ticket:** YmerFlow/ymerflow-business#182 (option A of three; B is a Workbench-style constraint mode, C is Marquardt damping separate from beta)
 **Builds on:** #35 (every stop says why), the misfit-driven beta schedule
 
@@ -34,7 +34,7 @@ Two options: `directives__target__enable` (default True, as today) and `directiv
 
 ### A stop on convergence at a held beta
 
-`optimizer__rel_norm_change`, named after AarhusInv's `RelNormChange`: stop when the total objective, phi_d + beta phi_m, fell by less than this fraction from one iteration to the next. It is only checked between two iterations at the same beta, since a change of beta changes the objective by itself. Default None, off. The log line says which iteration, the two objective values and the fraction.
+`optimizer__rel_norm_change`, named after AarhusInv's `RelNormChange`: stop when the total objective, phi_d + beta phi_m, fell by less than this fraction from one iteration to the next. It is only checked between two iterations at the same beta, since a change of beta changes the objective by itself. Default None, off. The log line says which iteration, the two objective values and the fraction. With IRLS on, the run refuses it: IRLS changes the regularization weights at a held beta and has its own stop rules.
 
 ### The stall count at a cooling factor of 1
 
@@ -42,7 +42,7 @@ A step that leaves beta where it was counts as a hold, not a cooling step, so th
 
 ### Reporting
 
-When the run stops for any reason other than the target, one more log line gives the final phi_d against the target and the RMS misfit, so the misfit reads as QC. `final_beta`, `resdata`, `restotal` and `numdata` are written as now.
+At the end of every run, one more log line (`##MISFIT##`) gives the final phi_d against the target and the RMS misfit over the data in use, so the misfit reads as QC. `final_beta`, `resdata`, `restotal` and `numdata` are written as now.
 
 ## Decisions
 
