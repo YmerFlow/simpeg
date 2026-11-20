@@ -579,7 +579,7 @@ class BaseEM1DSimulation(BaseSimulation):
         return toDelete
 
     def depth_of_investigation_christiansen_2012(
-        self, m, relative_uncertainty, thresholds=(1.5, 0.75), weighted=False
+        self, m, relative_uncertainty, thresholds=(1.2, 0.6), weighted=False
     ):
         """Christiansen-Auken (2012) depth of investigation of this sounding at model ``m``.
 
@@ -595,8 +595,8 @@ class BaseEM1DSimulation(BaseSimulation):
         relative_uncertainty : ndarray (n_data,)
             Relative standard deviation of each datum [fraction]; ``inf`` for unused data.
         thresholds : sequence of float
-            Absolute thresholds [dimensionless]; default Aarhus Workbench's 1.5 (upper) and
-            0.75 (lower).
+            Absolute thresholds [dimensionless]; default 1.2 (upper) and 0.6 (lower), the
+            ends of the range the paper tested. Aarhus Workbench's pair is (1.5, 0.75).
         weighted : bool
             Divide by the relative standard deviation (eq. 3 as printed); default False.
 
