@@ -13,19 +13,10 @@ class LCRegularizationMesh(RegularizationMesh):
     :param list mesh: lit including two discretize meshes
     :param numpy.ndarray active_cells: bool array, size nC, that is True where we have active cells. Used to reduce the operators so we regularize only on active cells
     :param numpy.ndarray active_edges: bool array, size nE, that is True where we have active edges. Used to reduce the operators so we regularize only on active edges
-    :param bool distance_weighted: if True, the lateral gradient divides each model
-        difference by the length of its triangulation edge, and the vertical gradient
-        by the distance between layer centres, so smoothness is a true gradient in
-        metres and ``alpha_r`` / ``alpha_z`` relate to length scales
-        (``L = sqrt(alpha / alpha_s)``). If False (the default, and the historical
-        behaviour), every lateral link and every layer interface is a plain
-        difference: ``alpha_r`` and ``alpha_z`` are then per-link and per-layer
-        weights, not length scales, and a link between lines kilometres apart weighs
-        the same as one between neighbouring soundings (ymerflow-business#119).
     :param numpy.ndarray locations: optional (n_nodes, 2) sounding coordinates used for
-        the edge lengths when ``distance_weighted`` is True. Defaults to the lateral
-        mesh's own nodes. Pass the true positions when the mesh was built from
-        jittered ones (as for a single straight flight line).
+        the edge lengths. Defaults to the lateral mesh's own nodes. Pass the true
+        positions when the mesh was built from jittered ones (as for a single straight
+        flight line).
     :param numpy.ndarray edges: optional (n_edges, 2) node index pairs the lateral
         gradient differences, in place of the triangulation's edges (e.g. a chain
         along each flight line plus the triangulation edges between lines). The
@@ -34,6 +25,12 @@ class LCRegularizationMesh(RegularizationMesh):
         lateral edge; its gradient row is scaled by the square root, so the edge
         enters the smoothness as ``weight * (dm / length) ** 2`` (times ``alpha_r``).
 
+    The gradients are true gradients in the units of the locations: the lateral one
+    divides each model difference by the length of its edge, and the vertical one by
+    the distance between layer centers. A link between lines kilometers apart is
+    therefore weak next to one between neighboring soundings, and ``alpha_r`` /
+    ``alpha_z`` set length scales, ``L = sqrt(alpha / alpha_s)``
+    (ymerflow-business#119).
     """
 
     _active_edges = None
@@ -43,7 +40,6 @@ class LCRegularizationMesh(RegularizationMesh):
         mesh,
         active_cells=None,
         active_edges=None,
-        distance_weighted=False,
         locations=None,
         edges=None,
         edge_weights=None,
@@ -69,7 +65,6 @@ class LCRegularizationMesh(RegularizationMesh):
                 )
             if (self.edge_weights < 0).any():
                 raise ValueError("edge_weights must be non-negative")
-        self.distance_weighted = distance_weighted
         utils.set_kwargs(self, **kwargs)
 
     @property
@@ -92,20 +87,6 @@ class LCRegularizationMesh(RegularizationMesh):
             (np.full(2 * self.n_edges, 0.5), (rows, self.edges.reshape(-1))),
             shape=(self.n_edges, self.n_nodes),
         )
-
-    @property
-    def distance_weighted(self) -> bool:
-        """Whether gradients are divided by real distances (see class docstring)."""
-        return self._distance_weighted
-
-    @distance_weighted.setter
-    def distance_weighted(self, value: bool):
-        self._distance_weighted = bool(value)
-        # Operators depend on the setting; drop any cached ones.
-        self._cell_gradient_r = None
-        self._cell_gradient_z = None
-        self._cell_distances_r = None
-        self._cell_distances_z = None
 
     @property
     def edge_lengths(self) -> np.ndarray:
@@ -277,9 +258,7 @@ class LCRegularizationMesh(RegularizationMesh):
 
         """
         if getattr(self, "_cell_gradient_r", None) is None:
-            grad = self.nodal_gradient_stencil
-            if self.distance_weighted:
-                grad = utils.sdiag(1.0 / self.edge_lengths) @ grad
+            grad = utils.sdiag(1.0 / self.edge_lengths) @ self.nodal_gradient_stencil
             if self.edge_weights is not None:
                 grad = utils.sdiag(np.sqrt(self.edge_weights)) @ grad
             self._cell_gradient_r = (
@@ -308,14 +287,8 @@ class LCRegularizationMesh(RegularizationMesh):
             Cell center distance array along the r-direction.
         """
         if getattr(self, "_cell_distances_r", None) is None:
-            if self.distance_weighted:
-                # One distance per (edge, layer) row, in the cell_gradient_r ordering.
-                self._cell_distances_r = self.Paer.T @ np.repeat(
-                    self.edge_lengths, self.nz
-                )
-            else:
-                Ave = self.aveCC2Fr
-                self._cell_distances_r = Ave * (self.Pac.T * self.h_gridded_r)
+            # One distance per (edge, layer) row, in the cell_gradient_r ordering.
+            self._cell_distances_r = self.Paer.T @ np.repeat(self.edge_lengths, self.nz)
         return self._cell_distances_r
 
     @property
@@ -325,12 +298,9 @@ class LCRegularizationMesh(RegularizationMesh):
 
         """
         if getattr(self, "_cell_gradient_z", None) is None:
-            if self.distance_weighted:
-                # discretize's cell_gradient divides by the distance between layer
-                # centres; same sparsity and zero boundary rows as the stencil.
-                grad = self.mesh_vertical.cell_gradient
-            else:
-                grad = self.mesh_vertical.stencil_cell_gradient
+            # discretize's cell_gradient divides by the distance between layer centers;
+            # same sparsity and zero boundary rows as the stencil.
+            grad = self.mesh_vertical.cell_gradient
             self._cell_gradient_z = (
                 self.Pafz.T * sp.kron(utils.speye(self.n_nodes), grad) * self.Pac
             )

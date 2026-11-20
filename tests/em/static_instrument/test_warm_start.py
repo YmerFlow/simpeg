@@ -273,15 +273,17 @@ def fake_inversion(beta):
         dmisfit=dmisfit, model=np.log(1 / 50.0) * np.ones(N * len(TOPS)), dpred=dobs, beta=beta))
 
 
-def test_outputs_carry_final_beta_and_the_start_report():
+def test_outputs_carry_final_beta_the_start_report_and_the_lateral_links():
     s = system(startmodel__dataset=start_model(lines=[1, 2]))
     s.make_startmodel(THICKNESSES)
+    s.make_regularization(THICKNESSES)      # no xdist or timestamp: the triangulation's links
     s._beta_recorder = SimpleNamespace(beta=8.0)
     s.inv = fake_inversion(beta=4.0)        # cooled once more after the last iteration
     s.make_inversion_outputs()
     for out in (s.l2, s.l2pred, s.corrected):
         assert out.model_info["final_beta"] == 8.0
         assert out.model_info["startmodel_by_position"] == 4
+        assert out.model_info["lateral_links"] == "triangulation"
     assert "final_beta" not in s._xyz.model_info
 
 
