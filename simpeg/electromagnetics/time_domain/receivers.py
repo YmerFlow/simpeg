@@ -1,8 +1,74 @@
+import numpy as np
 import scipy.sparse as sp
+from scipy import signal
 
 from ...utils import mkvc, validate_type, validate_direction, validate_float
 from discretize.utils import Zero
 from ...survey import BaseTimeRx
+
+
+def _validate_filter_order(name, var):
+    """Check a low-pass filter order: 0, between 0 and 1, or an integer of 1 or more."""
+    var = validate_float(name, var, min_val=0.0)
+    if var > 1 and var != int(var):
+        raise ValueError(
+            f"'{name}' must be 0 (no filter), between 0 and 1, or an integer "
+            f"of 1 or more, got {var}"
+        )
+    return var
+
+
+def gex_low_pass_response(frequencies, order, cutoff_frequency):
+    """Frequency response of one receiver low-pass filter, with the order read
+    as AarhusInv reads the filter order in a GEX or TEM file.
+
+    Parameters
+    ----------
+    frequencies : numpy.ndarray
+        Frequencies [Hz].
+    order : float
+        Filter order as the GEX writes it [dimensionless]. 0 is no filter. An
+        integer n of 1 or more is a Butterworth low-pass of order n. A value
+        z between 0 and 1 is a Gaussian-RLC filter with damping z, read as
+        the second-order low-pass ``w0**2 / (s**2 + 2 * z * w0 * s + w0**2)``
+        with ``w0 = 2 * pi * cutoff_frequency``.
+    cutoff_frequency : float
+        Cutoff frequency [Hz].
+
+    Returns
+    -------
+    numpy.ndarray of complex
+        The response H at ``s = 2j * pi * frequencies``, dimensionless; all
+        ones for order 0.
+
+    Raises
+    ------
+    ValueError
+        If the order is negative, or above 1 and not an integer.
+
+    Notes
+    -----
+    The AarhusInv manual (version 8) names the Gaussian-RLC filter but gives
+    no formula for it. With the second-order form above for a SkyTEM coil
+    filter of 0.99 at 210 kHz, the forward of a published Workbench model
+    comes within 1-2% of Workbench's own forward at the early gates, where
+    reading 0.99 as a first-order stage left it 5-10% low.
+
+    AarhusInv applies the Gaussian-RLC filter before the front gate and the
+    other filters after it. Without a front gate in the simulation, all the
+    filters multiply the whole response, and their order does not matter.
+    """
+    order = _validate_filter_order("order", order)
+    frequencies = np.asarray(frequencies, dtype=float)
+    if order == 0:
+        return np.ones(frequencies.shape, dtype=complex)
+    if order < 1:
+        s = 1j * frequencies / cutoff_frequency
+        return 1 / (s**2 + 2 * order * s + 1)
+    numer, denom = signal.butter(
+        int(order), 2 * np.pi * cutoff_frequency, "low", analog=True
+    )
+    return signal.freqs(numer, denom, worN=2 * np.pi * frequencies)[1]
 
 
 class BaseRx(BaseTimeRx):
@@ -158,12 +224,12 @@ class BaseRx(BaseTimeRx):
 
     @property
     def lp_cutoff_frequency_1(self):
-        """First cascaded first-order low pass filter cutoff frequency.
+        """First receiver low-pass filter cutoff frequency.
 
         Returns
         -------
         float
-            Cutoff frequency (Hz) of the first cascaded low pass stage.
+            Cutoff frequency [Hz] of the first receiver low-pass filter.
         """
         return self._lp_cutoff_frequency_1
 
@@ -175,31 +241,32 @@ class BaseRx(BaseTimeRx):
 
     @property
     def lp_power_1(self):
-        """First cascaded first-order low pass filter power (order).
+        """First receiver low-pass filter order, read as a GEX filter order.
 
-        A power of ``0`` (the default) makes the stage the identity, so a
-        receiver that never sets it is unaffected. Unlike the singular
-        ``lp_power`` this is an integer filter order and is not capped below 1.
+        ``0`` (the default) is no filter, so a receiver that never sets it is
+        unaffected. An integer n of 1 or more is a Butterworth filter of order
+        n, and a value between 0 and 1 a Gaussian-RLC filter with that
+        damping; see :func:`gex_low_pass_response`.
 
         Returns
         -------
         float
-            Order of the first cascaded low pass stage.
+            Order of the first receiver low-pass filter [dimensionless].
         """
         return self._lp_power_1
 
     @lp_power_1.setter
     def lp_power_1(self, var):
-        self._lp_power_1 = validate_float("lp_power_1", var, min_val=0.0)
+        self._lp_power_1 = _validate_filter_order("lp_power_1", var)
 
     @property
     def lp_cutoff_frequency_2(self):
-        """Second cascaded first-order low pass filter cutoff frequency.
+        """Second receiver low-pass filter cutoff frequency.
 
         Returns
         -------
         float
-            Cutoff frequency (Hz) of the second cascaded low pass stage.
+            Cutoff frequency [Hz] of the second receiver low-pass filter.
         """
         return self._lp_cutoff_frequency_2
 
@@ -211,22 +278,21 @@ class BaseRx(BaseTimeRx):
 
     @property
     def lp_power_2(self):
-        """Second cascaded first-order low pass filter power (order).
+        """Second receiver low-pass filter order, read as a GEX filter order.
 
-        A power of ``0`` (the default) makes the stage the identity. Unlike the
-        singular ``lp_power`` this is an integer filter order and is not capped
-        below 1.
+        ``0`` (the default) is no filter. Otherwise as ``lp_power_1``; see
+        :func:`gex_low_pass_response`.
 
         Returns
         -------
         float
-            Order of the second cascaded low pass stage.
+            Order of the second receiver low-pass filter [dimensionless].
         """
         return self._lp_power_2
 
     @lp_power_2.setter
     def lp_power_2(self, var):
-        self._lp_power_2 = validate_float("lp_power_2", var, min_val=0.0)
+        self._lp_power_2 = _validate_filter_order("lp_power_2", var)
 
     def getSpatialP(self, mesh, f):
         """Get spatial projection matrix from mesh to receivers.
