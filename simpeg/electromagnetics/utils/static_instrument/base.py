@@ -38,7 +38,7 @@ from .schedules import (
     StartingBeta,
 )
 from .smoothness import (
-    crs_unit, inline_links, length_scale_of, otherline_links, resolve_pair)
+    LENGTH_SCALE_GROUP, crs_unit, inline_links, otherline_links, resolve_pair)
 from .utils import (detect_cpu_availability, describe_layers, lateral_median, layer_tops,
                     load_start_models, match_soundings, median_line_spacing,
                     sounding_keys, start_model_resistivity)
@@ -767,6 +767,8 @@ class XYZSystem(object):
         self._cached_cluster_startmodel = startmodel
         return startmodel
 
+    regularization: LENGTH_SCALE_GROUP
+    "Smallness and smoothness weights. Each smoothness weight alpha has a length scale L, alpha = alpha_s * L**2, and either can be given."
     regularization__mref: typing.Literal['auto', 'startmodel', 'halfspace'] = 'auto'
     "Reference model for regularization: 'startmodel' uses the start model (the cluster-derived one when clustering is on); 'halfspace' uses a flat halfspace at startmodel__res. 'auto' (default) is 'halfspace' when starting from startmodel__dataset, so the smallness term does not pull the result back toward the earlier models, and 'startmodel' otherwise."
 
@@ -826,7 +828,7 @@ class XYZSystem(object):
     L_r = sqrt(alpha_r / alpha_s): the default 25 with alpha_s 1e-4 is L_r 500 m. alpha_r has no
     effect on vertical structure within a sounding; use alpha_z for that.
     """
-    regularization__L_r: length_scale_of("alpha_r") = 500.
+    regularization__L_r: float = 500.
     """Length scale of alpha_r, in the CRS linear unit (m or ft): alpha_r = alpha_s * L_r**2.
 
     Another way to give alpha_r. An alpha's default and its length's default agree at the default
@@ -846,7 +848,7 @@ class XYZSystem(object):
     The ratio of the lateral to the vertical length sets the anisotropy of the regularization:
     by default the model is smoothed over 500 m laterally and 50 m vertically.
     """
-    regularization__L_z: length_scale_of("alpha_z") = 50.
+    regularization__L_z: float = 50.
     "Length scale of alpha_z, in the CRS linear unit: alpha_z = alpha_s * L_z**2. Give either one; see L_r."
     regularization__distance_weighted: typing.Annotated[bool, {"swaggerspect_deprecated": True}] = None
     """Deprecated and ignored: distance weighting is always on (ymerflow-business#119). Leave it unset.
@@ -865,7 +867,7 @@ class XYZSystem(object):
     the same length scale. Needs a line column and an xdist or timestamp column; without either,
     the links fall back to the triangulation with alpha_r (see alpha_r). Both 0 leaves no lateral
     smoothness."""
-    regularization__L_inline: length_scale_of("alpha_r_inline") = 500.
+    regularization__L_inline: float = 500.
     "Length scale of alpha_r_inline, in the CRS linear unit: alpha_r_inline = alpha_s * L_inline**2. Give either one; see L_r."
     regularization__alpha_r_otherline: float = 25.
     """Lateral weight of the links between flight lines; see alpha_r_inline.
@@ -876,7 +878,7 @@ class XYZSystem(object):
     independent, and at the default 500 m lines 2 km apart pull on each other at about a
     quarter of the smallness. 0 inverts each line on its own, all lines sharing one beta
     schedule and one stopping rule."""
-    regularization__L_otherline: length_scale_of("alpha_r_otherline") = 500.
+    regularization__L_otherline: float = 500.
     "Length scale of alpha_r_otherline, in the CRS linear unit: alpha_r_otherline = alpha_s * L_otherline**2. Give either one; see L_r."
 
     def _given(self, name):
