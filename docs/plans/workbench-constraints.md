@@ -1,6 +1,6 @@
 # Regularization set as Workbench constraints
 
-**State:** draft 2026-11-23, decisions open
+**State:** decisions answered 2026-11-23; the form of `ConstraintByThickness` is being tested
 **Ticket:** YmerFlow/ymerflow-business#182 (option B of three: A holds one beta for a survey, #45; C is Marquardt damping separate from beta)
 **Builds on:** #45 (schedule `none`, the target switch, `optimizer__rel_norm_change`), #38 (always distance-weighted, links split along and between lines), #31
 
@@ -66,19 +66,21 @@ The data misfit (linear data, weighted by 1 / STD), the DOI, the outputs and the
 
 ### Reporting
 
-The run log prints the factors and the resulting sigma at d_ref, at the median inline spacing and at the median line spacing, so the balance between directions is visible. `model_info` records the mode and the factors.
+The run log prints the factors and the resulting sigma at d_ref, at the median inline spacing and at the median line spacing, so the balance between directions is visible. Next to each lateral factor it prints the approximate length scale L, the distance at which one link may vary by a factor of 2: C(d) = 1 + (d / L)^n, so L = d_ref / (C - 1)^(1/n), about 150 m for 1.3 at 30 m with n 0.75, and about 650 m for 1.1. `model_info` records the mode, the factors and the lengths.
 
 ## Decisions
 
-| # | Question | Options | Suggested |
+Answered 2026-11-23.
+
+| # | Question | Options | Decided |
 |---|---|---|---|
-| 1 | How the user gives the constraints | A: factors as Workbench's dialog shows them (2.0, 1.3). B: STDs as its files store them (1.0, 0.3). C: sigma in ln units. | A: what a Workbench user reads and types. |
-| 2 | Links between lines | A: a separate otherline factor, defaulting to the lateral one (SCI-style), 99 for none (LCI-style). B: one lateral factor for all links. | A: both Workbench modes, with the inline/otherline split that exists. |
-| 3 | `ConstraintByThickness` | A: uniform vertical factor per interface now; add the thickness scaling once its form is known. B: guess a scaling now. | A, and confirm the form from a Workbench MOD export or the Aarhus group. |
+| 1 | How the user gives the constraints | A: factors as Workbench's dialog shows them (2.0, 1.3). B: STDs as its files store them (1.0, 0.3). C: sigma in ln units. D: a lateral length in m. | A, with the approximate lateral length scale shown next to each factor (see Reporting). |
+| 2 | Links between lines | A: a separate otherline factor, defaulting to the lateral one (SCI-style), 99 for none (LCI-style). B: one lateral factor for all links. | A. |
+| 3 | `ConstraintByThickness` | A: uniform vertical factor per interface now; add the thickness scaling once its form is known. B: guess a scaling now. | A. Workbench writes its MOD files to a temporary folder and deletes them, so the form is tested instead from a run's iteration file: the vertical, lateral and prior terms it reports, recomputed from the run's exported final model under each candidate rule. |
 | 4 | Beta, schedule and stop in this mode | A: defaults (beta 1, `none`, target off, 0.007) that can be overridden. B: fixed, not overridable. | A. |
-| 5 | Prior | A: per cell toward the reference model at `prior_factor` 99, no volume weighting. B: keep `alpha_s`. | A: it is what Workbench does, and its models trend back to the reference. |
-| 6 | Data space | A: keep linear data with 1 / STD. B: invert log data, as AarhusInv does by default. | A for now: with relative errors the two weight residuals nearly alike; B is a separate change to the data misfit. |
-| 7 | IRLS | A: refused in this mode. B: allowed. | A. |
+| 5 | Prior | A: per cell toward the reference model at `prior_factor` 99, no volume weighting. B: keep `alpha_s`. | A. |
+| 6 | Data space | A: keep linear data with 1 / STD. B: invert log data, as AarhusInv does by default. | A. Log data space becomes an option for every run in its own change, YmerFlow/ymerflow-business#185. |
+| 7 | IRLS | A: refused in this mode. B: allowed. | A. A blocky option (L1 on the constraints, as Workbench's blocky) on top of this mode is planned in YmerFlow/ymerflow-business#186. Sharp is out of scope. |
 
 ## Tests
 
@@ -90,9 +92,10 @@ The run log prints the factors and the resulting sigma at d_ref, at the median i
 
 ## Validation
 
-1. A line from a Workbench project whose settings and CON files are on hand: the same data, layers, start model, prior and constraints, inverted in this mode, against Workbench's model of it. Compare per cell within the DOI (median and 90th percentile of |log10(ours / Workbench)|), the data residual distributions and the iteration counts. This runs locally, and its numbers go to the ticket, not here.
-2. This needs the two forwards to agree for that system first; #44 does so for a SkyTEM line, and the front gate is still open.
-3. The SkyTEM demo line with the Medium preset against its published model, as a second check whose Workbench settings aren't known.
+Chosen: one HeliTEM line from a Workbench project whose settings, CON and iteration files are on hand, with its data, final model and forward response exported. It runs locally only, and its files and numbers stay out of every repository and ticket.
+
+1. The forward first. #44 matched Workbench for SkyTEM; HeliTEM hasn't been checked. Our forward of Workbench's final model against Workbench's exported forward response, gate by gate. The front gate is still open.
+2. The inversion: the same data, layers, start model, prior and constraints, inverted in this mode, against Workbench's model. Compare per cell within the DOI (median and 90th percentile of |log10(ours / Workbench)|), the data residual distributions, and the iteration counts against the run's iteration file.
 
 ## Work
 
@@ -100,4 +103,4 @@ The run log prints the factors and the resulting sigma at d_ref, at the median i
 - aem-processes: the regenerated option schema; grouping the constraint options in the form so the two modes don't show together is worth doing with YmerFlow/Ymerflow#138's group widget.
 - Platform: an environment build once approved.
 
-Rough size: 2-3 days in simpeg with tests, then 1-2 days of validation.
+Rough size: 2-3 days in simpeg with tests, then 1-2 days of validation, plus about half a day for the HeliTEM forward check.
