@@ -22,6 +22,38 @@ from geoana.kernels.tranverse_electric_reflections import rTE_forward, rTE_gradi
 from ...utils import validate_type, validate_string
 
 
+def _gate_quadrature(rx):
+    """Times to evaluate a receiver at, and the weights averaging them to its gates.
+
+    Parameters
+    ----------
+    rx : BaseRx
+        A time-domain receiver.
+
+    Returns
+    -------
+    times : numpy.ndarray
+        Evaluation times [s]: the receiver's own ``times`` when it has no
+        ``gate_windows``, otherwise ``gate_window_nodes`` Gauss-Legendre nodes
+        on each gate's [open, close] window, gate by gate.
+    weights : numpy.ndarray or None
+        The node weights divided by the window width, the same for every
+        gate: a gate's mean over its window is the sum of its nodes' values
+        times ``weights``. None without windows.
+    """
+    windows = rx.gate_windows
+    if windows is None:
+        return rx.times, None
+    if windows.shape[0] != len(rx.times):
+        raise ValueError(
+            f"receiver has {len(rx.times)} times but {windows.shape[0]} gate windows"
+        )
+    x, w = roots_legendre(rx.gate_window_nodes)
+    t_open, t_close = windows[:, 0], windows[:, 1]
+    nodes = ((t_open + t_close)[:, None] + (t_close - t_open)[:, None] * x) / 2
+    return nodes.ravel(), w / 2
+
+
 class Simulation1DLayered(BaseEM1DSimulation):
     """
     Simulation class for simulating the TEM response over a 1D layered Earth
@@ -121,13 +153,14 @@ class Simulation1DLayered(BaseEM1DSimulation):
         for src in survey.source_list:
             for rx in src.receiver_list:
                 wave = src.waveform
+                t_eval, _ = _gate_quadrature(rx)
                 if isinstance(wave, StepOffWaveform):
-                    times = rx.times[rx.times > 0]
+                    times = t_eval[t_eval > 0]
                     t_min = min(times.min(), t_min)
                     t_max = max(times.max(), t_max)
                 else:
                     try:
-                        times = rx.times - wave.time_nodes[:, None]
+                        times = t_eval - wave.time_nodes[:, None]
                         times[times < 0.0] = 0.0
                         quad_points = (times[:-1] - times[1:])[..., None] * (
                             x + 1
@@ -175,13 +208,16 @@ class Simulation1DLayered(BaseEM1DSimulation):
                     out[t > 0.0] = splines[i](np.log(t[t > 0.0])) / t[t > 0.0]
                     return out
 
-                # Then calculate the values at each time
-                A = np.zeros((len(rx.times), n_t))
+                # Then calculate the values at each time: the receiver's own
+                # times, or the quadrature nodes of its gate windows, averaged
+                # back to one row per gate below.
+                t_eval, weights = _gate_quadrature(rx)
+                A = np.zeros((len(t_eval), n_t))
                 if isinstance(wave, StepOffWaveform):
                     # do not need to do too much fancy here, just need to interpolate
-                    # from t_spline_points to rx.times (at positive times)...
+                    # from t_spline_points to t_eval (at positive times)...
                     for i in range(n_t):
-                        A[:, i] = func(rx.times, i)
+                        A[:, i] = func(t_eval, i)
                 else:
                     # loop over pairs of nodes and use gaussian quadrature to integrate
 
@@ -189,13 +225,13 @@ class Simulation1DLayered(BaseEM1DSimulation):
                     n_interval = len(time_nodes) - 1
                     quad_times = []
                     for i in range(n_interval):
-                        b = rx.times - time_nodes[i]
+                        b = t_eval - time_nodes[i]
                         b = np.maximum(b, 0.0)
-                        a = rx.times - time_nodes[i + 1]
+                        a = t_eval - time_nodes[i + 1]
                         a = np.maximum(a, 0.0)
                         quad_times = (b - a)[:, None] * (x + 1) / 2.0 + a[:, None]
                         quad_scale = (b - a) / 2
-                        wave_eval = wave.eval_deriv(rx.times[:, None] - quad_times)
+                        wave_eval = wave.eval_deriv(t_eval[:, None] - quad_times)
                         for i in range(n_t):
                             A[:, i] -= np.sum(
                                 quad_scale[:, None]
@@ -204,6 +240,9 @@ class Simulation1DLayered(BaseEM1DSimulation):
                                 * func(quad_times, i),
                                 axis=-1,
                             )
+                if weights is not None:
+                    A = A.reshape(len(rx.times), len(weights), n_t)
+                    A = (A * weights[:, None]).sum(axis=1)
                 if isinstance(rx, (PointMagneticFluxDensity, PointMagneticField)):
                     As.append(A @ (A_dft / omegas))
                 else:

@@ -2,7 +2,14 @@ import numpy as np
 import scipy.sparse as sp
 from scipy import signal
 
-from ...utils import mkvc, validate_type, validate_direction, validate_float
+from ...utils import (
+    mkvc,
+    validate_type,
+    validate_direction,
+    validate_float,
+    validate_integer,
+    validate_ndarray_with_shape,
+)
 from discretize.utils import Zero
 from ...survey import BaseTimeRx
 
@@ -82,6 +89,12 @@ class BaseRx(BaseTimeRx):
         Receiver orientation.
     times : (n_times) numpy.ndarray
         Time channels
+    gate_windows : (n_times, 2) numpy.ndarray, optional
+        Open and close time [s] of each gate. The 1D layered simulation then
+        returns each gate as the average over its window; see
+        ``gate_windows``.
+    gate_window_nodes : int, default: 5
+        Gauss-Legendre nodes per gate window.
     """
 
     def __init__(
@@ -98,6 +111,8 @@ class BaseRx(BaseTimeRx):
         lp_power_1=0.0,
         lp_cutoff_frequency_2=3e5,
         lp_power_2=0.0,
+        gate_windows=None,
+        gate_window_nodes=5,
         **kwargs,
     ):
         if (key := "projComp") in kwargs.keys():
@@ -120,6 +135,8 @@ class BaseRx(BaseTimeRx):
         self.lp_cutoff_frequency_2 = lp_cutoff_frequency_2
         self.lp_power_2 = lp_power_2
         super().__init__(locations=locations, times=times, **kwargs)
+        self.gate_window_nodes = gate_window_nodes
+        self.gate_windows = gate_windows
 
     @property
     def orientation(self):
@@ -293,6 +310,59 @@ class BaseRx(BaseTimeRx):
     @lp_power_2.setter
     def lp_power_2(self, var):
         self._lp_power_2 = _validate_filter_order("lp_power_2", var)
+
+    @property
+    def gate_windows(self):
+        """Open and close time of each gate, or None to sample at ``times``.
+
+        With windows, the 1D layered simulation returns each gate as the
+        average of the response over [open, close], by Gauss-Legendre
+        quadrature with ``gate_window_nodes`` nodes. AarhusInv does the same
+        when a gate's open and close times are given (AarhusInv manual,
+        version 8, p. 56). A window of zero width is the same as sampling at
+        its time. Other simulations ignore the windows.
+
+        Returns
+        -------
+        (n_times, 2) numpy.ndarray or None
+            Open and close time [s] of each gate, on the same time axis as
+            ``times``, one row per entry of ``times``.
+        """
+        return self._gate_windows
+
+    @gate_windows.setter
+    def gate_windows(self, var):
+        if var is None:
+            self._gate_windows = None
+            return
+        var = validate_ndarray_with_shape(
+            "gate_windows", var, shape=(len(self.times), 2), dtype=float
+        )
+        if np.any(var[:, 1] < var[:, 0]):
+            raise ValueError(
+                "'gate_windows' must close at or after they open, got "
+                f"{var[var[:, 1] < var[:, 0]].tolist()}"
+            )
+        self._gate_windows = var
+
+    @property
+    def gate_window_nodes(self):
+        """Number of Gauss-Legendre nodes per gate window.
+
+        Five nodes average a SkyTEM gate window to within 1e-6 of a fine
+        Simpson rule at the earliest kept gates.
+
+        Returns
+        -------
+        int
+            Nodes per gate window [dimensionless], 1 or more; 1 samples the
+            window's midpoint.
+        """
+        return self._gate_window_nodes
+
+    @gate_window_nodes.setter
+    def gate_window_nodes(self, var):
+        self._gate_window_nodes = validate_integer("gate_window_nodes", var, min_val=1)
 
     def getSpatialP(self, mesh, f):
         """Get spatial projection matrix from mesh to receivers.
