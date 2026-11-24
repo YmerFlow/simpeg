@@ -1,13 +1,13 @@
 # Front gate and gate windows in the TEM forward
 
-**State:** proposed, decisions open
+**State:** decided 2026-11-24, the suggested answers; being built (gate windows first, #49)
 **Ticket:** YmerFlow/Ymerflow#94 (the front gate, and the flat ~2% left after the receiver filters)
 **Builds on:** #44 (the GEX receiver filter order read as AarhusInv reads it)
-**Target system:** SkyTEM 312HP. **Validation:** the public SkyTEM 304 benchmark line in ymerflow-demo-data, our forward of the published Workbench model divided by Workbench's own forward of it.
+**Target systems:** SkyTEM 306HP first, then SkyTEM 312HP. **Validation:** the public SkyTEM 304 benchmark line in ymerflow-demo-data, our forward of the published Workbench model divided by Workbench's own forward of it.
 
 ## Summary
 
-With #44 in place, the front gate explains almost nothing at the gates we keep. On the benchmark it moves one gate, the first kept high-moment gate at 72.7 us, by 1.6%, and no low-moment gate. On the SkyTEM 312HP it changes no kept gate on either moment, for any halfspace from 3 to 1000 ohm.m, as long as it sits after the coil filter, which is where AarhusInv puts it.
+With #44 in place, the front gate explains almost nothing at the gates we keep. On the benchmark it moves one gate, the first kept high-moment gate at 72.7 us, by 1.6%, and no low-moment gate. On the SkyTEM 306HP and 312HP it changes no kept gate on either moment, for any halfspace from 3 to 1000 ohm.m, as long as it sits after the coil filter, which is where AarhusInv puts it.
 
 What #44 left on the benchmark has three other causes, each measured:
 
@@ -15,7 +15,7 @@ What #44 left on the benchmark has three other causes, each measured:
 2. **The transmitter is a point dipole.** The segmented loop the GEX describes gives 2.6% less at 8.5 us, 1.3% less at the first high-moment gate, and under 0.5% less late.
 3. **The benchmark tool forwards at the measured altitude, Workbench at its inverted altitude.** That is a tool issue, not a fork issue. Fixing it cuts the sounding-to-sounding scatter of the ratio from about 5% to about 1.5%.
 
-With all three, ours/Workbench is 0.987-1.003 at every low-moment gate from 8.5 us and 0.996-1.004 at every high-moment gate. On the SkyTEM 312HP, gate-window averaging matters more than anywhere else: up to 6% at kept low-moment gates.
+With all three, ours/Workbench is 0.987-1.003 at every low-moment gate from 8.5 us and 0.996-1.004 at every high-moment gate. On the SkyTEM 306HP and 312HP, gate-window averaging matters more than anywhere else: up to 6.5% at the first kept low-moment gates.
 
 The proposal: average over gate windows by adding rows to the fork's existing time matrix (no operator layer), offer the segmented loop behind an option until its cost is measured in an inversion, and leave the front gate out of the model, with a check that no kept gate sits close to it. A closed form for the front gate costs little in the same place and is decision 2.
 
@@ -84,6 +84,37 @@ The fork computes the secondary field only. AarhusInv computes the primary field
 The fork evaluates each gate at its center time. AarhusInv integrates over the gate when the open and close times are given (manual, version 8, p. 56), and the benchmark shows that Workbench does: the late gates go from 0.982-0.987 to 0.999-1.004 when we average over the window.
 
 Gauss-Legendre quadrature over each window converges fast. Against a 33-point Simpson reference on the 312HP's kept gates, the worst error is 5e-2 with one node (the center), 6e-4 with two, 5e-5 with three and 1e-6 with five.
+
+### SkyTEM 306HP
+
+From the stock SkyTEM 306HP GEX in Ymerflow `gex/SkyTEM/`: the same frame, loop and receiver position as the 304 and 312HP.
+
+| | LM (Channel1) | HM (Channel2) |
+|---|---|---|
+| Coil filter (`RxCoilLPFilter1`) | 0.99, 202.3 kHz: Gaussian-RLC | same |
+| Board filter (`TiBLowPassFilter`) | order 1, 1 MHz | order 1, 1 MHz |
+| `FrontGateTime` / `FrontGateDelay` | -0.72 us / 0 | 10 us / 0 |
+| `PrimaryFieldDampingFactor` | 1e-6 | 0.01 |
+| `GateTimeShift`, `MeaTimeDelay` | 0, 0 | 0, 0 |
+| Turn-off ramp | 7.8 us | 2 us |
+| `NoGates`, `RemoveInitialGates` | 25, 6 | 41, 7 |
+| First kept gate | 12.2 us (10.8-13.6) | 15.65 us (13.9-17.4) |
+| `RepFreq` | 22.5 Hz | 22.5 Hz |
+
+The LM front gate again opens before the turn-off. The first kept HM gate opens 3.9 us, or 24 board-filter time constants, after the HM front gate. The HM gate that straddles it (9.75 us, 8.5-11.0) is removed by `RemoveInitialGates`.
+
+Local forwards, as for the 312HP below (halfspaces 3-1000 ohm.m, 30 m):
+
+| Change | LM kept gates (12.2-56 us) | HM kept gates (15.7-68 us) |
+|---|---|---|
+| No front gate (today), window averaged | 1.0000 | 1.0000 |
+| Front gate before the coil filter instead of after it | 1.0000 | 0.979-0.987 at 15.7 us |
+| Center sample instead of window average | 0.935-0.998 | 0.990-0.999 |
+| Coil filter read as first order (before #44) | 0.70-0.98 | 0.92-0.99 |
+| Segmented loop / point dipole (10-1000 ohm.m) | 0.966-0.998 | 0.981-0.998 |
+| Primary field times the damping factor | below 1e-6 | below 1e-6 |
+
+So on the 306HP, too, the front gate needs no modeling, and averaging over the gate window is the largest change: 6.5% low at the first kept LM gate over a 1000 ohm.m halfspace. Five Gauss-Legendre nodes per window are within 2e-8 of a 33-point Simpson rule there.
 
 ### SkyTEM 312HP
 
@@ -157,7 +188,9 @@ At validation, warn when a kept gate opens less than 5 board-filter time constan
 
 ## Decisions
 
-| # | Question | Options | Suggested |
+All six were decided on 2026-11-24 with the suggested answers, and the SkyTEM 306HP goes first.
+
+| # | Question | Options | Suggested, and decided |
 |---|---|---|---|
 | 1 | Gate sampling | A: average over the gate window by Gauss-Legendre nodes, as rows of the time matrix, default on, option off. B: keep center sampling. | A, five nodes. It is the 1-1.5% at every gate on the benchmark and up to 6% at early 312HP gates, and costs nothing per forward. |
 | 2 | The front gate | A: not modeled, plus the validation check. B: the closed form in the time matrix (first-order board filters only, others refused), default on. C: the scoping doc's operator layer. | A. It moves no kept gate on the 312HP, and on the benchmark it turns a +0.8% residual at one gate into -0.8%. B is the cheap upgrade if a system ever keeps gates within a few board time constants of its front gate. |
