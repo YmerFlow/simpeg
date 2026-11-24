@@ -198,12 +198,53 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
             filters.append((float(spec[0]), float(spec[1])))
         return filters
 
-    def make_receiver(self, location, times, orientation, channel):
+    simulation__gate_windows: bool = True
+    """Average each gate over its window, as Workbench does.
+
+    The GEX gate table gives every gate an open and a close time beside its
+    center. With this on, each gate is the average of the response over
+    [open, close], by five Gauss-Legendre nodes built once into the
+    simulation's time matrix, so a forward or a Jacobian costs the same as
+    before. Off samples each gate at its center. On the SkyTEM 304 benchmark
+    line, center sampling leaves the forward 1-1.5% low against Workbench's
+    forward of the same model from about 40 us on, which averaging removes;
+    at the earliest kept low-moment gates of a SkyTEM 306HP or 312HP the
+    difference reaches 6-7% (YmerFlow/Ymerflow#94). A GEX whose gate table
+    has no open and close
+    columns is sampled at the centers. Switch off to reproduce older
+    results."""
+
+    def gate_windows(self, channel):
+        """Open and close time of each gate of a channel, aligned with ``times``.
+
+        Parameters
+        ----------
+        channel : int
+            GEX channel number (one-based).
+
+        Returns
+        -------
+        (n_gates, 2) numpy.ndarray or None
+            Open and close time [s] of each modeled gate, with
+            ``GateTimeShift`` and ``MeaTimeDelay`` applied as for the centers
+            and the channel's ``times_filter`` applied; None when the GEX gate
+            table has no open and close columns.
+        """
+        table = np.asarray(self.gex.gate_times(channel), dtype=float)
+        if table.ndim != 2 or table.shape[1] < 3:
+            return None
+        windows = table[:, 1:3]
+        gates = self.times_filter[channel - 1]
+        return windows if gates is None else windows[gates]
+
+    def make_receiver(self, location, times, orientation, channel, windows=None):
         rx = tdem.receivers.PointMagneticFluxTimeDerivative(location, times, orientation)
         if self.simulation__receiver_filters:
             for slot, (order, cutoff) in enumerate(self.receiver_filters(channel), start=1):
                 setattr(rx, "lp_cutoff_frequency_%d" % slot, cutoff)
                 setattr(rx, "lp_power_%d" % slot, order)
+        if self.simulation__gate_windows and windows is not None:
+            rx.gate_windows = windows
         return rx
 
     def _waveform_points(self, channel):
@@ -342,8 +383,12 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
         radius = np.sqrt(area / np.pi)
         sources = []
         for pos, channel in enumerate(self.channels):
+            windows = None
+            if self.simulation__gate_windows:
+                windows = self.gate_windows(channel)
             receivers = [self.make_receiver(
-                receiver_location, times[channel - 1], rx_orientations[pos], channel)]
+                receiver_location, times[channel - 1], rx_orientations[pos], channel,
+                windows)]
             if horizontal_offset < 1.0:
                 # Central-loop geometry — the receiver sits at the loop centre
                 # (e.g. Xcite, RxCoilPosition ~ 0). A point MagDipole source is
