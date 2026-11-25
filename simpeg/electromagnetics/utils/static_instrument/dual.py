@@ -223,9 +223,10 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
     1/``TxLoopArea``), which is what Workbench models. The two differ near
     the loop: on the SkyTEM 304 benchmark line the loop gives 2.6% less than
     the dipole at 8.5 us, and on a SkyTEM 306HP or 312HP 0.2-3.4% less at the
-    kept low-moment gates, under 0.5% late (YmerFlow/Ymerflow#94). A forward
-    costs 6-8 times the dipole's, because every wire point carries its own
-    Hankel transform. Central-loop systems are unaffected."""
+    kept low-moment gates, under 0.5% late (YmerFlow/Ymerflow#94). On the
+    benchmark line a forward costs 13.5 times the dipole's and a Jacobian 16
+    times, because every wire point carries its own Hankel transform.
+    Central-loop systems are unaffected."""
 
     def tx_loop_path(self, location):
         """The transmitter loop as a closed wire path centered on a sounding.
