@@ -214,6 +214,55 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
     columns is sampled at the centers. Switch off to reproduce older
     results."""
 
+    simulation__tx_loop: bool = False
+    """Model an offset receiver's transmitter as the GEX's segmented loop.
+
+    By default the transmitter of an offset-receiver system (SkyTEM) is a
+    point magnetic dipole at the frame center. With this on it is the polygon
+    ``TxLoopPoint1..N`` as a line current carrying unit moment (current
+    1/``TxLoopArea``), which is what Workbench models. The two differ near
+    the loop: on the SkyTEM 304 benchmark line the loop gives 2.6% less than
+    the dipole at 8.5 us, and on a SkyTEM 306HP or 312HP 0.2-3.4% less at the
+    kept low-moment gates, under 0.5% late (YmerFlow/Ymerflow#94). On the
+    benchmark line a forward costs 13.5 times the dipole's and a Jacobian 16
+    times, because every wire point carries its own Hankel transform.
+    Central-loop systems are unaffected."""
+
+    def tx_loop_path(self, location):
+        """The transmitter loop as a closed wire path centered on a sounding.
+
+        Parameters
+        ----------
+        location : array_like
+            Sounding position (x, y, altitude) [m]. The corners are offset
+            from it in the GEX frame's horizontal coordinates, as the receiver
+            position is.
+
+        Returns
+        -------
+        (n + 1, 3) numpy.ndarray
+            Corner positions [m], counter-clockwise seen from above so the
+            loop's moment points up like the dipole's, with the first corner
+            repeated at the end.
+
+        Raises
+        ------
+        ValueError
+            If the GEX declares no ``TxLoopPoint`` corners.
+        """
+        corners = self.gex.General.get("TxLoopPoint")
+        if corners is None:
+            raise ValueError(
+                "simulation__tx_loop needs the loop corners TxLoopPoint1..N "
+                "in the GEX [General] section")
+        corners = np.asarray(corners, dtype=float).reshape(-1, 2)
+        x, y = corners[:, 0], corners[:, 1]
+        if np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y) < 0:
+            corners = corners[::-1]
+        corners = np.vstack([corners, corners[:1]])
+        corners = corners + np.asarray(location[:2], dtype=float)
+        return np.c_[corners, np.full(len(corners), float(location[2]))]
+
     def gate_windows(self, channel):
         """Open and close time of each gate of a channel, aligned with ``times``.
 
@@ -403,6 +452,14 @@ class MeasuredTEMXYZSystem(base.XYZSystem):
                     receiver_list=receivers,
                     waveform=waveforms[pos],
                     radius=radius,
+                    current=1.0 / area,
+                    i_sounding=idx))
+            elif self.simulation__tx_loop:
+                # Offset receiver with the loop the GEX describes, unit moment.
+                sources.append(tdem.sources.LineCurrent(
+                    receivers,
+                    location=self.tx_loop_path(location),
+                    waveform=waveforms[pos],
                     current=1.0 / area,
                     i_sounding=idx))
             else:

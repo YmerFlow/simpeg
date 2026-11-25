@@ -391,10 +391,18 @@ class BaseStitchedEM1DSimulation(BaseSimulation):
 
     @property
     def source_locations_for_sounding(self):
+        """Position of each sounding's first source, one row per sounding [m].
+
+        A wire source (a line current) has a path of nodes rather than one
+        position; its centroid stands in for it, as the 1D simulation uses the
+        path's mean height.
+        """
         if getattr(self, "_source_locations_for_sounding", None) is None:
             self._source_locations_for_sounding = np.vstack(
                 [
-                    self.survey._source_location_by_sounding[ii][0]
+                    np.atleast_2d(
+                        self.survey._source_location_by_sounding[ii][0]
+                    ).mean(axis=0)
                     for ii in range(self.n_sounding)
                 ]
             )

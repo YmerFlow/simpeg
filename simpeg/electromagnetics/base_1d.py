@@ -421,7 +421,10 @@ class BaseEM1DSimulation(BaseSimulation):
 
                 if is_wire_loop:
                     dxy = rx.locations[:, :2] - xyks
-                    h = src.location.mean(axis=0)[2] - self.topo[-1]
+                    # The wire path's mean height, unless the height is a
+                    # model parameter (hMap), as it is for a point source.
+                    if self.hMap is None:
+                        h = src.location.mean(axis=0)[2] - self.topo[-1]
                     z = h + rx.locations[:, 2] - src.location.mean(axis=0)[2]
                     offsets = np.linalg.norm(dxy, axis=-1)
                 else:
